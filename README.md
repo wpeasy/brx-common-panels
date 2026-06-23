@@ -11,7 +11,7 @@ namespace. Two plugins that both want a strip under the canvas now simply cooper
 
 - **Zero dependencies**, ~12 KB, single IIFE. Builder‑editor only — **no front‑end footprint.**
 - **Idempotent**: the first copy to load wins; an official Bricks‑provided registry (or another plugin's bundled copy) always wins if present.
-- **Multi‑panel docks**: up to 3 panels per dock, side‑by‑side, with drag‑to‑resize dividers.
+- **Multi‑panel docks**: panels sit side‑by‑side (up to 3 per row, wrapping to a new row), with drag‑to‑resize dividers.
 - **Drag‑and‑drop** panels between the top and bottom docks (and reorder within a dock).
 - **Layout persistence** across reloads (position, order, width, height, collapsed).
 - **Panel template** with header / body / footer slots, a drag grip, optional close button — so every plugin's panel looks consistent.
@@ -135,6 +135,23 @@ handle.unregister();      // remove it entirely
 That's it — your panel docks below the canvas, shares the chrome (drag grip, resize/
 collapse bar) with every other panel, and its layout survives reloads.
 
+### Try it right now (console)
+
+Open a page in the Bricks builder, then paste this into the **main‑window** dev console
+(not the preview iframe) to drop a few demo panels in — drag their headers between docks,
+drag the divider between them to resize, and click ✕ to close:
+
+```js
+BRX_Common.panels.create({ id:'demo-1', position:'top', title:'Panel One', body:'<p>Drag my header · resize the divider · ✕ to close</p>', footer:'footer one', onClose:()=>console.log('closed demo-1') });
+BRX_Common.panels.create({ id:'demo-2', position:'top', title:'Panel Two', body:'<p>Two panels share the top dock — drag the divider between us.</p>', onClose:()=>console.log('closed demo-2') });
+BRX_Common.panels.create({ id:'demo-3', position:'bottom', title:'Panel Three', body:'<p>I am in the bottom dock. Drag my header up to join the others.</p>', onClose:()=>console.log('closed demo-3') });
+
+// Remove them again:
+// ['demo-1','demo-2','demo-3'].forEach(id => BRX_Common.panels.unregister(id));
+```
+
+(Each `create()` is on one line so the body strings don't break when pasted.)
+
 ---
 
 ## Concepts
@@ -144,18 +161,19 @@ iframe wrapper inside `#bricks-preview`. The **dock** is the vertical unit: it o
 drag‑resize/collapse **bar** on its iframe‑facing edge, its **height**, and its
 **collapsed** state.
 
-**Panels fill; docks size.** A dock hosts up to **3 panels** in a no‑wrap flex **row**,
-side‑by‑side and equal‑width by default. Panels just fill their slot — they carry no
-resize chrome of their own. A draggable **divider** between adjacent panels resizes them
-horizontally.
+**Panels fill; docks size.** A dock arranges its panels in **rows of up to 3**,
+side‑by‑side and equal‑width by default; a 4th panel **wraps to a new row** and the dock
+grows taller. Panels just fill their slot — they carry no resize chrome of their own. A
+draggable **divider** between adjacent panels in a row resizes them horizontally.
 
 **The bar.** A slim accent bar sits on each dock's iframe‑facing edge. **Click it** to
 collapse the dock to just the bar; **drag it** to resize the dock's height.
 
-**The grip.** Templated panels get a `⠿` **grip** at the far‑left of the header — the only
-handle that starts a drag, so it never fights the panel's own header controls. Drag it to
-move the panel to the other dock or reorder it within a dock; a ghost follows the cursor
-and a placeholder shows where it will land.
+**Dragging.** The **whole header** is a drag handle (a `⠿` grip at the far‑left hints at
+it). Press and drag the header to move the panel to the other dock or reorder it within a
+dock — a ghost follows the cursor and a placeholder shows where it will land. Presses on
+interactive header controls (buttons, inputs, the close ✕) don't start a drag, and a plain
+click never does (a drag only begins past a small movement threshold).
 
 ---
 
@@ -210,7 +228,7 @@ register(el: HTMLElement, options?: RegisterOptions): PanelHandle | null
 | `maxHeight` | `number` | 85% of preview | Resize clamp maximum (px). |
 | `resizable` | `boolean` | `true` | Whether the dock shows its resize/collapse bar. |
 | `defaultCollapsed` | `boolean` | `false` | Initial collapsed state when nothing is persisted. |
-| `onCollapseChange` | `(collapsed: boolean) => void` | – | Fires whenever the dock's collapsed state changes (including the restored state on register). |
+| `onCollapseChange` | `(collapsed: boolean) => void` | – | Fires whenever this panel's dock collapses/expands (and once with the restored state on register). Per‑panel — every panel in a shared dock is notified, and the callback travels with the panel across a drag‑and‑drop move. |
 
 > **Note:** drag‑and‑drop, the grip, header/body/footer slots, the close button, and the
 > footer are **template features** (`create()`). A bare `register()` element gets docking,
@@ -327,10 +345,6 @@ ids** (e.g. `myplugin-css`) so your persisted layout never clashes with another 
 
 ## Known limitations
 
-- **Collapse callback is per‑dock.** `onCollapseChange` is stored on the panel's
-  register‑time dock. After a drag‑and‑drop move to another dock, collapsing the new dock
-  won't fire it. (`setHidden` / `setCollapsed` / `setHeight` on the handle still work — they
-  resolve the panel's current dock.)
 - **Widths reset on add / move.** Dragging a panel into a dock, or registering a brand‑new
   panel, re‑equalises that dock's widths (by design). Divider resizes persist until the
   panel set changes.

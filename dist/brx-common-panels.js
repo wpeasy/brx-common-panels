@@ -22,13 +22,14 @@
   (function bootstrap() {
     if (typeof window === "undefined" || typeof document === "undefined") return;
     if (window.BRX_Common && window.BRX_Common.panels) return;
-    const VERSION = "0.10.0";
+    const VERSION = "0.13.0";
     const PREVIEW_ID = "bricks-preview";
     const WRAPPER_ID = "bricks-builder-iframe-wrapper";
     const HOST_CLASS = "brx-common-host";
     const DOCK_CLASS = "brx-common-dock";
     const BAR_CLASS = "brx-common-dock__bar";
     const CHEVRON_CLASS = "brx-common-dock__chevron";
+    const ROWS_CLASS = "brx-common-dock__rows";
     const ROW_CLASS = "brx-common-dock__row";
     const DIVIDER_CLASS = "brx-common-dock__divider";
     const PANEL_CLASS = "brx-common-panel";
@@ -41,11 +42,12 @@
     const GHOST_CLASS = "brx-common-panel__ghost";
     const PLACEHOLDER_CLASS = "brx-common-dock__placeholder";
     const DRAGGING_CLASS = "brx-common-panel--dragging";
+    const DOCK_DRAG_CLASS = "brx-common-dock--drag";
     const STYLE_ID = "brx-common-panels-style";
     const LS_KEY = "brx-common-panels";
     const DEFAULT_HEIGHT = 300;
     const DEFAULT_MIN = 80;
-    const MAX_PANELS = 3;
+    const MAX_PER_ROW = 3;
     const PANEL_MIN_WIDTH = 80;
     const registry = /* @__PURE__ */ new Map();
     const docks = /* @__PURE__ */ new Map();
@@ -75,11 +77,19 @@
         "." + DOCK_CLASS + "{flex:0 0 auto;position:relative;display:flex;flex-direction:column;min-height:0;box-sizing:border-box;}",
         "." + DOCK_CLASS + '[data-collapsed="true"]{height:auto !important;}',
         "." + DOCK_CLASS + ":empty{display:none;}",
-        // Panel row: flex row, no-wrap — up to 3 panels side by side, equal width.
-        "." + ROW_CLASS + "{flex:1 1 auto;min-height:0;min-width:0;display:flex;flex-direction:row;flex-wrap:nowrap;}",
+        // Rows container: vertical stack — each row holds up to MAX_PER_ROW
+        // panels side by side; a 4th panel wraps to a new row beneath. The dock
+        // height is content-driven (it grows taller as rows are added).
+        "." + ROWS_CLASS + "{flex:0 0 auto;min-width:0;display:flex;flex-direction:column;}",
+        "." + ROW_CLASS + "{flex:0 0 auto;min-height:0;min-width:0;display:flex;flex-direction:row;flex-wrap:nowrap;}",
+        "." + ROW_CLASS + "+." + ROW_CLASS + "{border-top:1px solid var(--builder-border,#3a3a3a);}",
         "." + ROW_CLASS + ">[data-brx-panel]{flex:1 1 0;min-width:" + PANEL_MIN_WIDTH + "px;min-height:0;overflow:hidden;}",
-        // Collapsed → hide the panel row, leaving just the chrome bar.
-        "." + DOCK_CLASS + '[data-collapsed="true"]>.' + ROW_CLASS + "{display:none;}",
+        // Collapsed → hide the rows, leaving just the chrome bar.
+        "." + DOCK_CLASS + '[data-collapsed="true"]>.' + ROWS_CLASS + "{display:none;}",
+        // While dragging, every dock shows a drop area; an empty dock's rows get
+        // a dashed drop-zone hint so a panel can be dropped into it.
+        "." + DOCK_CLASS + "." + DOCK_DRAG_CLASS + " ." + ROWS_CLASS + "{min-height:46px;}",
+        "." + DOCK_CLASS + "." + DOCK_DRAG_CLASS + " ." + ROWS_CLASS + ":empty{margin:4px;border:2px dashed var(--builder-color-accent,#3b82f6);background:rgba(59,130,246,.07);border-radius:3px;}",
         // Vertical divider between adjacent panels — drag to resize horizontally.
         "." + DIVIDER_CLASS + "{flex:0 0 4px;align-self:stretch;cursor:ew-resize;background:var(--builder-border,#3a3a3a);touch-action:none;}",
         "." + DIVIDER_CLASS + ":hover{background:var(--builder-color-accent,#3b82f6);}",
@@ -93,7 +103,9 @@
         "." + PANEL_CLASS + "{display:flex;flex-direction:column;height:100%;min-height:0;background:var(--builder-bg,#1e1e1e);color:var(--builder-color,#e0e0e0);font-family:inherit;font-size:12px;box-sizing:border-box;}",
         "." + PANEL_CLASS + " *{box-sizing:border-box;}",
         "." + PANEL_HEADER_CLASS + ",." + PANEL_FOOTER_CLASS + "{flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:3px 8px;min-height:24px;background:var(--bricks-bg-dark,#18191d);color:var(--bricks-color-light,#e6e9ee);}",
-        "." + PANEL_HEADER_CLASS + "{border-bottom:1px solid var(--builder-border,#2f3136);}",
+        // The whole header is a drag handle → grab cursor (interactive children keep theirs).
+        "." + PANEL_HEADER_CLASS + "{border-bottom:1px solid var(--builder-border,#2f3136);cursor:grab;}",
+        "." + PANEL_HEADER_CLASS + " button,." + PANEL_HEADER_CLASS + " a,." + PANEL_HEADER_CLASS + " input,." + PANEL_HEADER_CLASS + " select,." + PANEL_HEADER_CLASS + " textarea{cursor:auto;}",
         "." + PANEL_FOOTER_CLASS + "{border-top:1px solid var(--builder-border,#2f3136);}",
         "." + PANEL_TITLE_CLASS + "{font-weight:600;white-space:nowrap;}",
         // Drag grip (far left of the header) — the ONLY drag handle, so it
@@ -112,7 +124,12 @@
         "." + PANEL_CLOSE_CLASS + "{margin-left:auto;flex:0 0 auto;display:flex;align-items:center;justify-content:center;width:18px;height:18px;padding:0;border:0;background:transparent;color:inherit;cursor:pointer;font:600 12px/1 system-ui,sans-serif;opacity:.7;}",
         "." + PANEL_CLOSE_CLASS + ":hover{opacity:1;}",
         "." + PANEL_BODY_CLASS + "{flex:1 1 auto;min-height:0;overflow:auto;padding:6px 8px;}",
-        "." + PANEL_BODY_CLASS + "--flush{padding:0;}"
+        "." + PANEL_BODY_CLASS + "--flush{padding:0;}",
+        // Scrollbars matching the Bricks builder UI (thin, accent thumb on bg-3 track).
+        "." + PANEL_BODY_CLASS + "{scrollbar-width:thin;scrollbar-color:var(--builder-color-accent,#3b82f6) var(--builder-bg-3,#2a2a2a);}",
+        "." + PANEL_BODY_CLASS + "::-webkit-scrollbar{width:8px;height:8px;}",
+        "." + PANEL_BODY_CLASS + "::-webkit-scrollbar-track{background-color:var(--builder-bg-3,#2a2a2a);}",
+        "." + PANEL_BODY_CLASS + "::-webkit-scrollbar-thumb{background-color:var(--builder-color-accent,#3b82f6);}"
       ].join("");
       (document.head || document.documentElement).appendChild(style);
     }
@@ -159,36 +176,61 @@
     function updateChevron(state) {
       if (state.chevron) state.chevron.textContent = chevronChar(state.position, state.collapsed);
     }
+    function dockForEl(el) {
+      let found;
+      docks.forEach((d) => {
+        if (d.el.contains(el)) found = d;
+      });
+      return found;
+    }
+    function panelsIn(rowEl) {
+      return Array.prototype.filter.call(rowEl.children, (c) => c.hasAttribute("data-brx-panel"));
+    }
     function rowPanels(dock) {
-      return Array.prototype.filter.call(
-        dock.row.children,
-        (c) => c.hasAttribute("data-brx-panel")
-      );
+      return Array.prototype.slice.call(dock.rowsEl.querySelectorAll("[data-brx-panel]"));
     }
     function visibleRowPanels(dock) {
       return rowPanels(dock).filter((p) => p.style.display !== "none");
     }
-    function sortDockByOrder(dock) {
+    function orderedVisiblePanels(dock) {
       const persisted = loadLayout().panels;
-      const ordered = rowPanels(dock).sort((a, b) => {
+      return visibleRowPanels(dock).sort((a, b) => {
         var _a, _b, _c, _d;
         const oa = (_b = (_a = persisted[a.dataset.brxId || ""]) == null ? void 0 : _a.order) != null ? _b : Number.MAX_SAFE_INTEGER;
         const ob = (_d = (_c = persisted[b.dataset.brxId || ""]) == null ? void 0 : _c.order) != null ? _d : Number.MAX_SAFE_INTEGER;
         return oa - ob;
       });
-      ordered.forEach((p) => dock.row.appendChild(p));
     }
-    function layoutRow(dock) {
-      Array.prototype.slice.call(dock.row.querySelectorAll("." + DIVIDER_CLASS)).forEach((d) => d.remove());
-      const panels = visibleRowPanels(dock);
-      panels.forEach((p) => {
-        p.style.flex = (p.dataset.brxWidth || "1") + " 1 0";
+    function applyRowHeights(dock) {
+      Array.prototype.slice.call(dock.rowsEl.querySelectorAll("." + ROW_CLASS)).forEach((r) => {
+        r.style.height = dock.height + "px";
       });
-      for (let i = 0; i < panels.length - 1; i++) {
-        dock.row.insertBefore(createDivider(dock), panels[i + 1]);
-      }
     }
-    function createDivider(dock) {
+    function layoutDockSlots(dock, slots, equal = false) {
+      const hidden = rowPanels(dock).filter((p) => p.style.display === "none");
+      dock.rowsEl.textContent = "";
+      for (let i = 0; i < slots.length; i += MAX_PER_ROW) {
+        const rowEl = document.createElement("div");
+        rowEl.className = ROW_CLASS;
+        rowEl.style.height = dock.height + "px";
+        const group = slots.slice(i, i + MAX_PER_ROW);
+        group.forEach((slot) => {
+          if (slot.hasAttribute("data-brx-panel")) {
+            slot.style.flex = (equal ? "1" : slot.dataset.brxWidth || "1") + " 1 0";
+          }
+          rowEl.appendChild(slot);
+        });
+        for (let j = 0; j < group.length - 1; j++) {
+          rowEl.insertBefore(createDivider(), group[j + 1]);
+        }
+        dock.rowsEl.appendChild(rowEl);
+      }
+      hidden.forEach((p) => dock.rowsEl.appendChild(p));
+    }
+    function repackRows(dock) {
+      layoutDockSlots(dock, orderedVisiblePanels(dock));
+    }
+    function createDivider() {
       const divider = document.createElement("div");
       divider.className = DIVIDER_CLASS;
       let startX = 0;
@@ -217,10 +259,12 @@
         (_a = divider.releasePointerCapture) == null ? void 0 : _a.call(divider, e.pointerId);
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
-        visibleRowPanels(dock).forEach((p) => {
+        const rowEl = divider.parentElement;
+        const dock = rowEl ? dockForEl(rowEl) : void 0;
+        if (rowEl) panelsIn(rowEl).forEach((p) => {
           p.dataset.brxWidth = String(p.offsetWidth);
         });
-        saveDockLayout(dock);
+        if (dock) saveDockLayout(dock);
         emitChange();
       };
       divider.addEventListener("pointerdown", (e) => {
@@ -228,9 +272,10 @@
         if (e.button !== 0) return;
         prev = divider.previousElementSibling;
         next = divider.nextElementSibling;
-        if (!prev || !next) return;
+        const rowEl = divider.parentElement;
+        if (!prev || !next || !rowEl) return;
         e.preventDefault();
-        const panels = rowPanels(dock);
+        const panels = panelsIn(rowEl);
         const widths = panels.map((p) => p.offsetWidth);
         panels.forEach((p, i) => {
           p.style.flex = widths[i] + " 1 0";
@@ -259,41 +304,52 @@
         position = wr ? y < wr.top + wr.height / 2 ? "top" : "bottom" : "bottom";
       }
       const target = docks.get(position);
-      const panels = target ? visibleRowPanels(target).filter((p) => p !== dragged) : [];
-      let index = panels.length;
-      for (let i = 0; i < panels.length; i++) {
-        const r = panels[i].getBoundingClientRect();
-        if (x < r.left + r.width / 2) {
-          index = i;
-          break;
+      if (!target) return { position, index: 0 };
+      const rows = Array.prototype.slice.call(target.rowsEl.querySelectorAll("." + ROW_CLASS));
+      let flatBefore = 0;
+      for (let r = 0; r < rows.length; r++) {
+        const panels = panelsIn(rows[r]).filter((p) => p !== dragged);
+        const rect = rows[r].getBoundingClientRect();
+        const inThisRow = y < rect.bottom || r === rows.length - 1;
+        if (inThisRow) {
+          let pos = panels.length;
+          for (let i = 0; i < panels.length; i++) {
+            const pr = panels[i].getBoundingClientRect();
+            if (x < pr.left + pr.width / 2) {
+              pos = i;
+              break;
+            }
+          }
+          return { position, index: flatBefore + pos };
         }
+        flatBefore += panels.length;
       }
-      return { position, index };
+      return { position, index: flatBefore };
     }
     function movePanelTo(panel, position, index) {
       const fromPos = panel.getAttribute("data-brx-panel");
       const fromDock = fromPos ? docks.get(fromPos) : void 0;
-      let toDock = docks.get(position);
-      if (!toDock) toDock = ensureDock(position, {});
-      if (rowPanels(toDock).filter((p) => p !== panel).length >= MAX_PANELS) {
-        console.warn('[BRX_Common] dock "' + position + '" is full (max ' + MAX_PANELS + ") \u2014 move ignored.");
-        return;
-      }
-      const ref = visibleRowPanels(toDock).filter((p) => p !== panel)[index] || null;
-      toDock.row.insertBefore(panel, ref);
+      const toDock = docks.get(position) || ensureDock(position, {});
+      const others = orderedVisiblePanels(toDock).filter((p) => p !== panel);
+      toDock.rowsEl.appendChild(panel);
       panel.setAttribute("data-brx-panel", position);
       const id = panel.dataset.brxId;
       if (id) {
         const entry = registry.get(id);
         if (entry) entry.position = position;
       }
-      rowPanels(toDock).forEach((p) => {
+      const flat = others.slice();
+      flat.splice(Math.max(0, Math.min(index, flat.length)), 0, panel);
+      flat.forEach((p) => {
         delete p.dataset.brxWidth;
       });
-      layoutRow(toDock);
+      flat.forEach((p, i) => {
+        if (p.dataset.brxId) persistPanel(p.dataset.brxId, { position, order: i });
+      });
+      layoutDockSlots(toDock, flat);
       saveDockLayout(toDock);
       if (fromDock && fromDock !== toDock) {
-        layoutRow(fromDock);
+        repackRows(fromDock);
         saveDockLayout(fromDock);
         if (fromPos) cleanupDock(fromPos);
       }
@@ -301,62 +357,74 @@
     }
     function reflowDragPreview(placeholder, dragged, target) {
       if (placeholder.parentElement) placeholder.remove();
-      const into = docks.get(target.position);
-      if (into) {
-        const panels = visibleRowPanels(into).filter((p) => p !== dragged);
-        into.row.insertBefore(placeholder, panels[target.index] || null);
-      }
       ["top", "bottom"].forEach((pos) => {
         const d = docks.get(pos);
         if (!d) return;
-        Array.prototype.slice.call(d.row.querySelectorAll("." + DIVIDER_CLASS)).forEach((x) => x.remove());
-        const slots = visibleRowPanels(d).filter((p) => p !== dragged);
-        slots.forEach((p) => {
-          p.style.flex = "1 1 0";
-        });
-        const hasSlot = slots.length > 0 || placeholder.parentElement === d.row;
-        d.el.style.display = hasSlot ? "" : "none";
+        const slots = orderedVisiblePanels(d).filter((p) => p !== dragged);
+        if (pos === target.position) {
+          slots.splice(Math.max(0, Math.min(target.index, slots.length)), 0, placeholder);
+        }
+        layoutDockSlots(d, slots, true);
+        d.el.style.display = "";
       });
     }
-    function wireGripDrag(grip, panel) {
-      grip.addEventListener("pointerdown", (e) => {
-        var _a;
+    function isInteractiveTarget(t) {
+      var _a;
+      const el = t;
+      return !!((_a = el == null ? void 0 : el.closest) == null ? void 0 : _a.call(el, "button, a, input, select, textarea, label, [contenteditable], [data-brx-no-drag]"));
+    }
+    function wireHeaderDrag(header, panel) {
+      header.addEventListener("pointerdown", (e) => {
         if (e.button !== 0) return;
-        e.preventDefault();
-        e.stopPropagation();
-        (_a = grip.setPointerCapture) == null ? void 0 : _a.call(grip, e.pointerId);
-        const ghost = document.createElement("div");
-        ghost.className = GHOST_CLASS;
-        const titleEl = panel.querySelector("." + PANEL_TITLE_CLASS);
-        const headEl = panel.querySelector("." + PANEL_HEADER_CLASS);
-        ghost.textContent = ((titleEl == null ? void 0 : titleEl.textContent) || (headEl == null ? void 0 : headEl.textContent) || "Panel").trim().slice(0, 28) || "Panel";
-        document.body.appendChild(ghost);
+        if (isInteractiveTarget(e.target)) return;
+        const startX = e.clientX;
+        const startY = e.clientY;
+        let started = false;
+        let ghost = null;
+        let placeholder = null;
+        let target = resolveDropTarget(startX, startY, panel);
         const moveGhost = (ev) => {
-          ghost.style.transform = "translate(" + (ev.clientX + 12) + "px," + (ev.clientY + 12) + "px)";
+          if (ghost) ghost.style.transform = "translate(" + (ev.clientX + 12) + "px," + (ev.clientY + 12) + "px)";
         };
-        panel.classList.add(DRAGGING_CLASS);
-        const placeholder = document.createElement("div");
-        placeholder.className = PLACEHOLDER_CLASS;
-        let target = resolveDropTarget(e.clientX, e.clientY, panel);
-        moveGhost(e);
-        reflowDragPreview(placeholder, panel, target);
+        const begin = () => {
+          started = true;
+          ghost = document.createElement("div");
+          ghost.className = GHOST_CLASS;
+          const titleEl = panel.querySelector("." + PANEL_TITLE_CLASS);
+          const headEl = panel.querySelector("." + PANEL_HEADER_CLASS);
+          ghost.textContent = ((titleEl == null ? void 0 : titleEl.textContent) || (headEl == null ? void 0 : headEl.textContent) || "Panel").trim().slice(0, 28) || "Panel";
+          document.body.appendChild(ghost);
+          panel.classList.add(DRAGGING_CLASS);
+          placeholder = document.createElement("div");
+          placeholder.className = PLACEHOLDER_CLASS;
+          ["top", "bottom"].forEach((pos) => {
+            const d = docks.get(pos) || ensureDock(pos, {});
+            d.el.classList.add(DOCK_DRAG_CLASS);
+          });
+        };
         const onMove = (ev) => {
+          if (!started) {
+            if (Math.abs(ev.clientX - startX) < 4 && Math.abs(ev.clientY - startY) < 4) return;
+            begin();
+          }
           moveGhost(ev);
           target = resolveDropTarget(ev.clientX, ev.clientY, panel);
           reflowDragPreview(placeholder, panel, target);
         };
-        const onUp = (ev) => {
-          var _a2;
-          (_a2 = grip.releasePointerCapture) == null ? void 0 : _a2.call(grip, ev.pointerId);
+        const onUp = () => {
           window.removeEventListener("pointermove", onMove);
           window.removeEventListener("pointerup", onUp);
-          if (ghost.parentElement) ghost.remove();
-          if (placeholder.parentElement) placeholder.remove();
+          if (!started) return;
+          if (ghost == null ? void 0 : ghost.parentElement) ghost.remove();
+          if (placeholder == null ? void 0 : placeholder.parentElement) placeholder.remove();
           docks.forEach((d) => {
             d.el.style.display = "";
+            d.el.classList.remove(DOCK_DRAG_CLASS);
           });
           panel.classList.remove(DRAGGING_CLASS);
           movePanelTo(panel, target.position, target.index);
+          cleanupDock("top");
+          cleanupDock("bottom");
         };
         window.addEventListener("pointermove", onMove);
         window.addEventListener("pointerup", onUp);
@@ -406,7 +474,7 @@
         active = true;
         moved = false;
         startY = e.clientY;
-        startH = state.el.offsetHeight;
+        startH = state.height;
         (_a = bar.setPointerCapture) == null ? void 0 : _a.call(bar, e.pointerId);
         window.addEventListener("pointermove", onMove);
         window.addEventListener("pointerup", onUp);
@@ -426,31 +494,44 @@
     }
     function setDockHeight(state, px) {
       state.height = clampHeight(state, px);
-      if (!state.collapsed) state.el.style.height = state.height + "px";
+      if (!state.collapsed) applyRowHeights(state);
     }
     function applyCollapsedDom(state) {
       if (state.collapsed) {
         state.el.setAttribute("data-collapsed", "true");
-        state.el.style.height = "";
       } else {
         state.el.removeAttribute("data-collapsed");
-        state.el.style.height = state.height + "px";
+        applyRowHeights(state);
       }
       updateChevron(state);
     }
+    function entryForEl(el) {
+      let found;
+      registry.forEach((e) => {
+        if (e.el === el) found = e;
+      });
+      return found;
+    }
+    function notifyDockCollapse(state, collapsed) {
+      rowPanels(state).forEach((el) => {
+        var _a, _b;
+        try {
+          (_b = (_a = entryForEl(el)) == null ? void 0 : _a.onCollapse) == null ? void 0 : _b.call(_a, collapsed);
+        } catch (e) {
+        }
+      });
+    }
     function setDockCollapsed(state, collapsed) {
-      var _a;
       if (state.collapsed === collapsed) return;
       state.collapsed = collapsed;
       applyCollapsedDom(state);
       persistDock(state.position, { collapsed });
-      (_a = state.onCollapse) == null ? void 0 : _a.call(state, collapsed);
+      notifyDockCollapse(state, collapsed);
       emitChange();
     }
     function setPanelHidden(dock, panel, hidden) {
       panel.style.display = hidden ? "none" : "";
-      if (hidden && panel.parentElement === dock.row) dock.row.appendChild(panel);
-      layoutRow(dock);
+      repackRows(dock);
       const anyVisible = visibleRowPanels(dock).length > 0;
       dock.el.style.display = anyVisible ? "" : "none";
       emitChange();
@@ -458,10 +539,7 @@
     function ensureDock(position, opts) {
       var _a, _b, _c;
       const existing = docks.get(position);
-      if (existing) {
-        if (opts.onCollapseChange) existing.onCollapse = opts.onCollapseChange;
-        return existing;
-      }
+      if (existing) return existing;
       const preview = getPreview();
       const wrapper = getWrapper();
       const el = document.createElement("div");
@@ -469,8 +547,8 @@
       el.setAttribute("data-position", position);
       if (position === "top") preview.insertBefore(el, wrapper);
       else preview.insertBefore(el, wrapper.nextSibling);
-      const row = document.createElement("div");
-      row.className = ROW_CLASS;
+      const rowsEl = document.createElement("div");
+      rowsEl.className = ROWS_CLASS;
       const saved = loadLayout().docks[position] || {};
       const height = typeof saved.height === "number" ? saved.height : (_a = opts.defaultHeight) != null ? _a : DEFAULT_HEIGHT;
       const collapsed = typeof saved.collapsed === "boolean" ? saved.collapsed : !!opts.defaultCollapsed;
@@ -478,23 +556,21 @@
         el,
         bar: null,
         chevron: null,
-        row,
+        rowsEl,
         position,
         height,
         collapsed,
         min: (_b = opts.minHeight) != null ? _b : DEFAULT_MIN,
         max: (_c = opts.maxHeight) != null ? _c : Infinity,
-        resizable: opts.resizable !== false,
-        onCollapse: opts.onCollapseChange
+        resizable: opts.resizable !== false
       };
-      el.style.height = height + "px";
       if (state.resizable) state.bar = createBar(state);
       if (position === "top") {
-        el.appendChild(row);
+        el.appendChild(rowsEl);
         if (state.bar) el.appendChild(state.bar);
       } else {
         if (state.bar) el.appendChild(state.bar);
-        el.appendChild(row);
+        el.appendChild(rowsEl);
       }
       applyCollapsedDom(state);
       docks.set(position, state);
@@ -527,13 +603,8 @@
       const persisted = o.id ? loadLayout().panels[id] : void 0;
       const position = (persisted == null ? void 0 : persisted.position) || (o.position === "top" ? "top" : "bottom");
       const dock = ensureDock(position, o);
-      if (rowPanels(dock).length >= MAX_PANELS) {
-        console.warn('[BRX_Common] dock "' + dock.position + '" is full (max ' + MAX_PANELS + " panels) \u2014 register ignored.");
-        cleanupDock(dock.position);
-        return null;
-      }
       if (o.id) el.dataset.brxId = id;
-      dock.row.appendChild(el);
+      dock.rowsEl.appendChild(el);
       el.setAttribute("data-brx-panel", dock.position);
       if (persisted && persisted.width != null) {
         el.dataset.brxWidth = String(persisted.width);
@@ -542,11 +613,10 @@
           delete p.dataset.brxWidth;
         });
       }
-      sortDockByOrder(dock);
-      layoutRow(dock);
-      registry.set(id, { el, position: dock.position });
+      repackRows(dock);
+      registry.set(id, { el, position: dock.position, onCollapse: o.onCollapseChange });
       if (o.id) saveDockLayout(dock);
-      (_a = dock.onCollapse) == null ? void 0 : _a.call(dock, dock.collapsed);
+      (_a = o.onCollapseChange) == null ? void 0 : _a.call(o, dock.collapsed);
       emitChange();
       const curDock = () => docks.get(el.getAttribute("data-brx-panel")) || dock;
       return {
@@ -579,11 +649,13 @@
       const entry = registry.get(id);
       entry.el.removeAttribute("data-brx-panel");
       const host = entry.el.parentElement;
-      if (host && host.classList.contains(ROW_CLASS)) host.removeChild(entry.el);
+      if (host && (host.classList.contains(ROW_CLASS) || host.classList.contains(ROWS_CLASS))) {
+        host.removeChild(entry.el);
+      }
       registry.delete(id);
       const dock = docks.get(entry.position);
       if (dock) {
-        layoutRow(dock);
+        repackRows(dock);
         saveDockLayout(dock);
       }
       cleanupDock(entry.position);
@@ -658,7 +730,7 @@
       el.appendChild(body);
       if (footer) el.appendChild(footer);
       const handle = register(el, o);
-      wireGripDrag(grip, el);
+      wireHeaderDrag(header, el);
       if (closeBtn) {
         closeBtn.addEventListener("click", () => {
           var _a;

@@ -155,13 +155,14 @@ declare global {
     // if present. Plugins bundling this copy cooperate until Bricks ships it.
     if (window.BRX_Common && window.BRX_Common.panels) return;
 
-    const VERSION = '0.10.0';
+    const VERSION = '0.13.0';
     const PREVIEW_ID = 'bricks-preview';
     const WRAPPER_ID = 'bricks-builder-iframe-wrapper';
     const HOST_CLASS = 'brx-common-host';
     const DOCK_CLASS = 'brx-common-dock';
     const BAR_CLASS = 'brx-common-dock__bar';
     const CHEVRON_CLASS = 'brx-common-dock__chevron';
+    const ROWS_CLASS = 'brx-common-dock__rows';
     const ROW_CLASS = 'brx-common-dock__row';
     const DIVIDER_CLASS = 'brx-common-dock__divider';
     const PANEL_CLASS = 'brx-common-panel';
@@ -174,29 +175,33 @@ declare global {
     const GHOST_CLASS = 'brx-common-panel__ghost';
     const PLACEHOLDER_CLASS = 'brx-common-dock__placeholder';
     const DRAGGING_CLASS = 'brx-common-panel--dragging';
+    const DOCK_DRAG_CLASS = 'brx-common-dock--drag';
     const STYLE_ID = 'brx-common-panels-style';
     const LS_KEY = 'brx-common-panels';
     const DEFAULT_HEIGHT = 300;
     const DEFAULT_MIN = 80;
-    const MAX_PANELS = 3;       // panels per dock (flex row, no wrap)
+    const MAX_PER_ROW = 3;      // panels per row before wrapping to a new row
     const PANEL_MIN_WIDTH = 80; // px — horizontal-resize clamp
 
     interface DockState {
         el: HTMLElement;
         bar: HTMLElement | null;
         chevron: HTMLElement | null;
-        row: HTMLElement;       // flex-row host for the dock's panels
+        rowsEl: HTMLElement;    // vertical stack of rows (each row holds up to MAX_PER_ROW panels)
         position: DockPosition;
         height: number;
         collapsed: boolean;
         min: number;
         max: number;
         resizable: boolean;
-        onCollapse?: (collapsed: boolean) => void;
     }
     interface PanelEntry {
         el: HTMLElement;
         position: DockPosition;
+        // Per-PANEL collapse callback: every panel in a dock is notified when the
+        // dock collapses/expands, and the callback travels with the panel across
+        // a DnD move (it lives on the entry, not the dock).
+        onCollapse?: (collapsed: boolean) => void;
     }
 
     const registry = new Map<string, PanelEntry>();
@@ -237,11 +242,19 @@ declare global {
             '.' + DOCK_CLASS + '{flex:0 0 auto;position:relative;display:flex;flex-direction:column;min-height:0;box-sizing:border-box;}',
             '.' + DOCK_CLASS + '[data-collapsed="true"]{height:auto !important;}',
             '.' + DOCK_CLASS + ':empty{display:none;}',
-            // Panel row: flex row, no-wrap — up to 3 panels side by side, equal width.
-            '.' + ROW_CLASS + '{flex:1 1 auto;min-height:0;min-width:0;display:flex;flex-direction:row;flex-wrap:nowrap;}',
+            // Rows container: vertical stack — each row holds up to MAX_PER_ROW
+            // panels side by side; a 4th panel wraps to a new row beneath. The dock
+            // height is content-driven (it grows taller as rows are added).
+            '.' + ROWS_CLASS + '{flex:0 0 auto;min-width:0;display:flex;flex-direction:column;}',
+            '.' + ROW_CLASS + '{flex:0 0 auto;min-height:0;min-width:0;display:flex;flex-direction:row;flex-wrap:nowrap;}',
+            '.' + ROW_CLASS + '+.' + ROW_CLASS + '{border-top:1px solid var(--builder-border,#3a3a3a);}',
             '.' + ROW_CLASS + '>[data-brx-panel]{flex:1 1 0;min-width:' + PANEL_MIN_WIDTH + 'px;min-height:0;overflow:hidden;}',
-            // Collapsed → hide the panel row, leaving just the chrome bar.
-            '.' + DOCK_CLASS + '[data-collapsed="true"]>.' + ROW_CLASS + '{display:none;}',
+            // Collapsed → hide the rows, leaving just the chrome bar.
+            '.' + DOCK_CLASS + '[data-collapsed="true"]>.' + ROWS_CLASS + '{display:none;}',
+            // While dragging, every dock shows a drop area; an empty dock's rows get
+            // a dashed drop-zone hint so a panel can be dropped into it.
+            '.' + DOCK_CLASS + '.' + DOCK_DRAG_CLASS + ' .' + ROWS_CLASS + '{min-height:46px;}',
+            '.' + DOCK_CLASS + '.' + DOCK_DRAG_CLASS + ' .' + ROWS_CLASS + ':empty{margin:4px;border:2px dashed var(--builder-color-accent,#3b82f6);background:rgba(59,130,246,.07);border-radius:3px;}',
             // Vertical divider between adjacent panels — drag to resize horizontally.
             '.' + DIVIDER_CLASS + '{flex:0 0 4px;align-self:stretch;cursor:ew-resize;background:var(--builder-border,#3a3a3a);touch-action:none;}',
             '.' + DIVIDER_CLASS + ':hover{background:var(--builder-color-accent,#3b82f6);}',
@@ -255,7 +268,9 @@ declare global {
             '.' + PANEL_CLASS + '{display:flex;flex-direction:column;height:100%;min-height:0;background:var(--builder-bg,#1e1e1e);color:var(--builder-color,#e0e0e0);font-family:inherit;font-size:12px;box-sizing:border-box;}',
             '.' + PANEL_CLASS + ' *{box-sizing:border-box;}',
             '.' + PANEL_HEADER_CLASS + ',.' + PANEL_FOOTER_CLASS + '{flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:3px 8px;min-height:24px;background:var(--bricks-bg-dark,#18191d);color:var(--bricks-color-light,#e6e9ee);}',
-            '.' + PANEL_HEADER_CLASS + '{border-bottom:1px solid var(--builder-border,#2f3136);}',
+            // The whole header is a drag handle → grab cursor (interactive children keep theirs).
+            '.' + PANEL_HEADER_CLASS + '{border-bottom:1px solid var(--builder-border,#2f3136);cursor:grab;}',
+            '.' + PANEL_HEADER_CLASS + ' button,.' + PANEL_HEADER_CLASS + ' a,.' + PANEL_HEADER_CLASS + ' input,.' + PANEL_HEADER_CLASS + ' select,.' + PANEL_HEADER_CLASS + ' textarea{cursor:auto;}',
             '.' + PANEL_FOOTER_CLASS + '{border-top:1px solid var(--builder-border,#2f3136);}',
             '.' + PANEL_TITLE_CLASS + '{font-weight:600;white-space:nowrap;}',
             // Drag grip (far left of the header) — the ONLY drag handle, so it
@@ -275,6 +290,11 @@ declare global {
             '.' + PANEL_CLOSE_CLASS + ':hover{opacity:1;}',
             '.' + PANEL_BODY_CLASS + '{flex:1 1 auto;min-height:0;overflow:auto;padding:6px 8px;}',
             '.' + PANEL_BODY_CLASS + '--flush{padding:0;}',
+            // Scrollbars matching the Bricks builder UI (thin, accent thumb on bg-3 track).
+            '.' + PANEL_BODY_CLASS + '{scrollbar-width:thin;scrollbar-color:var(--builder-color-accent,#3b82f6) var(--builder-bg-3,#2a2a2a);}',
+            '.' + PANEL_BODY_CLASS + '::-webkit-scrollbar{width:8px;height:8px;}',
+            '.' + PANEL_BODY_CLASS + '::-webkit-scrollbar-track{background-color:var(--builder-bg-3,#2a2a2a);}',
+            '.' + PANEL_BODY_CLASS + '::-webkit-scrollbar-thumb{background-color:var(--builder-color-accent,#3b82f6);}',
         ].join('');
         (document.head || document.documentElement).appendChild(style);
     }
@@ -345,54 +365,81 @@ declare global {
         if (state.chevron) state.chevron.textContent = chevronChar(state.position, state.collapsed);
     }
 
-    // ── Panel row (horizontal layout) ──────────────────────────────────────
-    /** ALL registered panels in a dock's row (visible or hidden; excludes dividers). */
-    function rowPanels(dock: DockState): HTMLElement[] {
-        return Array.prototype.filter.call(
-            dock.row.children,
-            (c: Element) => c.hasAttribute('data-brx-panel'),
-        ) as HTMLElement[];
+    // ── Panel rows (up to MAX_PER_ROW per row, wrap to a new row) ───────────
+    /** Which dock contains an element (row/divider/panel). */
+    function dockForEl(el: HTMLElement): DockState | undefined {
+        let found: DockState | undefined;
+        docks.forEach((d) => { if (d.el.contains(el)) found = d; });
+        return found;
     }
 
-    /** Only the panels currently shown (a per-panel hide sets display:none). */
+    /** Panels in a single row element (excludes dividers). */
+    function panelsIn(rowEl: HTMLElement): HTMLElement[] {
+        return Array.prototype.filter.call(rowEl.children, (c: Element) => c.hasAttribute('data-brx-panel')) as HTMLElement[];
+    }
+
+    /** ALL registered panels in a dock, across every row (+ parked hidden), flat DOM order. */
+    function rowPanels(dock: DockState): HTMLElement[] {
+        return Array.prototype.slice.call(dock.rowsEl.querySelectorAll('[data-brx-panel]')) as HTMLElement[];
+    }
+
+    /** Visible panels (a per-panel hide sets display:none) across the dock, flat. */
     function visibleRowPanels(dock: DockState): HTMLElement[] {
         return rowPanels(dock).filter((p) => p.style.display !== 'none');
     }
 
-    /** Reorder the dock's panels in the DOM to match their persisted `order`. */
-    function sortDockByOrder(dock: DockState): void {
+    /** Visible panels sorted by persisted order — the flat order that chunks into rows. */
+    function orderedVisiblePanels(dock: DockState): HTMLElement[] {
         const persisted = loadLayout().panels;
-        const ordered = rowPanels(dock).sort((a, b) => {
+        return visibleRowPanels(dock).sort((a, b) => {
             const oa = persisted[a.dataset.brxId || '']?.order ?? Number.MAX_SAFE_INTEGER;
             const ob = persisted[b.dataset.brxId || '']?.order ?? Number.MAX_SAFE_INTEGER;
             return oa - ob;
         });
-        ordered.forEach((p) => dock.row.appendChild(p)); // dividers are rebuilt by layoutRow
+    }
+
+    /** Apply the dock's (shared) per-row height to all its rows. */
+    function applyRowHeights(dock: DockState): void {
+        Array.prototype.slice.call(dock.rowsEl.querySelectorAll('.' + ROW_CLASS))
+            .forEach((r: Element) => { (r as HTMLElement).style.height = dock.height + 'px'; });
     }
 
     /**
-     * Re-lay the row after the visible panel set changes: equal widths for the
-     * visible panels (per spec — adding a panel resets everyone to the same width)
-     * and a fresh divider between each adjacent VISIBLE pair. Hidden panels are
-     * parked at the end of the row (see setPanelHidden) so the visible ones stay
-     * contiguous and dividers always sit between two visible siblings.
+     * Rebuild the dock's rows from a flat list of SLOTS (visible panels, plus an
+     * optional drag placeholder) — chunked into rows of MAX_PER_ROW. Each panel
+     * gets its grow weight (or an equal weight when `equal`), a divider between
+     * adjacent panels, and the shared per-row height. Hidden panels are parked
+     * (display:none) directly in rowsEl, outside any row.
      */
-    function layoutRow(dock: DockState): void {
-        Array.prototype.slice
-            .call(dock.row.querySelectorAll('.' + DIVIDER_CLASS))
-            .forEach((d: Element) => d.remove());
-        const panels = visibleRowPanels(dock);
-        panels.forEach((p) => {
-            // Persisted/snapshotted grow weight, else equal (grow 1, basis 0).
-            p.style.flex = (p.dataset.brxWidth || '1') + ' 1 0';
-        });
-        for (let i = 0; i < panels.length - 1; i++) {
-            dock.row.insertBefore(createDivider(dock), panels[i + 1]);
+    function layoutDockSlots(dock: DockState, slots: HTMLElement[], equal = false): void {
+        const hidden = rowPanels(dock).filter((p) => p.style.display === 'none');
+        dock.rowsEl.textContent = ''; // detach rows/dividers (slot refs are held)
+        for (let i = 0; i < slots.length; i += MAX_PER_ROW) {
+            const rowEl = document.createElement('div');
+            rowEl.className = ROW_CLASS;
+            rowEl.style.height = dock.height + 'px';
+            const group = slots.slice(i, i + MAX_PER_ROW);
+            group.forEach((slot) => {
+                if (slot.hasAttribute('data-brx-panel')) {
+                    slot.style.flex = (equal ? '1' : (slot.dataset.brxWidth || '1')) + ' 1 0';
+                } // a placeholder keeps its CSS flex
+                rowEl.appendChild(slot);
+            });
+            for (let j = 0; j < group.length - 1; j++) {
+                rowEl.insertBefore(createDivider(), group[j + 1]);
+            }
+            dock.rowsEl.appendChild(rowEl);
         }
+        hidden.forEach((p) => dock.rowsEl.appendChild(p)); // parked, not in a row
     }
 
-    /** A draggable vertical divider that resizes the two panels it sits between. */
-    function createDivider(dock: DockState): HTMLElement {
+    /** Repack the dock into rows from its current visible panels (persisted order). */
+    function repackRows(dock: DockState): void {
+        layoutDockSlots(dock, orderedVisiblePanels(dock));
+    }
+
+    /** A draggable vertical divider that resizes the two panels it sits between (within one row). */
+    function createDivider(): HTMLElement {
         const divider = document.createElement('div');
         divider.className = DIVIDER_CLASS;
 
@@ -407,11 +454,8 @@ declare global {
             const delta = e.clientX - startX;
             let a = startPrev + delta;
             let b = startNext - delta;
-            // Clamp both to the min width, transferring the overflow to the neighbour.
             if (a < PANEL_MIN_WIDTH) { b -= PANEL_MIN_WIDTH - a; a = PANEL_MIN_WIDTH; }
             if (b < PANEL_MIN_WIDTH) { a -= PANEL_MIN_WIDTH - b; b = PANEL_MIN_WIDTH; }
-            // Apply pixel widths as flex-grow weights (basis 0) so the row stays
-            // responsive and untouched panels keep their snapshotted size.
             prev.style.flex = a + ' 1 0';
             next.style.flex = b + ' 1 0';
         };
@@ -419,23 +463,21 @@ declare global {
             divider.releasePointerCapture?.(e.pointerId);
             window.removeEventListener('pointermove', onMove);
             window.removeEventListener('pointerup', onUp);
-            // Record the resulting widths (grow weights) so they survive reload.
-            visibleRowPanels(dock).forEach((p) => { p.dataset.brxWidth = String(p.offsetWidth); });
-            saveDockLayout(dock);
+            const rowEl = divider.parentElement as HTMLElement | null;
+            const dock = rowEl ? dockForEl(rowEl) : undefined;
+            if (rowEl) panelsIn(rowEl).forEach((p) => { p.dataset.brxWidth = String(p.offsetWidth); });
+            if (dock) saveDockLayout(dock);
             emitChange();
         };
         divider.addEventListener('pointerdown', (e: PointerEvent) => {
             if (e.button !== 0) return;
             prev = divider.previousElementSibling as HTMLElement | null;
             next = divider.nextElementSibling as HTMLElement | null;
-            if (!prev || !next) return;
+            const rowEl = divider.parentElement as HTMLElement | null;
+            if (!prev || !next || !rowEl) return;
             e.preventDefault();
-            // Snapshot ALL panels' current widths as grow weights so the ones we
-            // aren't dragging hold their size while width transfers between prev/next.
-            // CRITICAL: read every width BEFORE writing any flex — interleaving the
-            // two thrashes layout (setting one panel's grow reflows the rest, so a
-            // subsequent offsetWidth read returns a skewed value → panels jump).
-            const panels = rowPanels(dock);
+            // Read ALL widths in THIS row before writing any flex (avoid layout thrash).
+            const panels = panelsIn(rowEl);
             const widths = panels.map((p) => p.offsetWidth);
             panels.forEach((p, i) => { p.style.flex = widths[i] + ' 1 0'; });
             startPrev = widths[panels.indexOf(prev)];
@@ -449,8 +491,11 @@ declare global {
         return divider;
     }
 
-    // ── Drag-and-drop between / within docks (grip handle) ──────────────────
-    /** Resolve which dock + insertion index the pointer is over. */
+    // ── Drag-and-drop between / within docks (header handle) ────────────────
+    /**
+     * Resolve which dock + FLAT insertion index (across all rows) the pointer is
+     * over. The flat index chunks back into rows of MAX_PER_ROW on drop.
+     */
     function resolveDropTarget(x: number, y: number, dragged: HTMLElement): { position: DockPosition; index: number } {
         const within = (d?: DockState): boolean => {
             if (!d) return false;
@@ -461,125 +506,151 @@ declare global {
         if (within(docks.get('top'))) position = 'top';
         else if (within(docks.get('bottom'))) position = 'bottom';
         else {
-            // Not over a dock — pick by the iframe wrapper's vertical midpoint so a
-            // panel can be dropped into a not-yet-existing dock above/below the canvas.
             const wrapper = getWrapper();
             const wr = wrapper?.getBoundingClientRect();
             position = wr ? (y < wr.top + wr.height / 2 ? 'top' : 'bottom') : 'bottom';
         }
         const target = docks.get(position);
-        const panels = target ? visibleRowPanels(target).filter((p) => p !== dragged) : [];
-        let index = panels.length;
-        for (let i = 0; i < panels.length; i++) {
-            const r = panels[i].getBoundingClientRect();
-            if (x < r.left + r.width / 2) { index = i; break; }
+        if (!target) return { position, index: 0 };
+
+        const rows = Array.prototype.slice.call(target.rowsEl.querySelectorAll('.' + ROW_CLASS)) as HTMLElement[];
+        let flatBefore = 0;
+        for (let r = 0; r < rows.length; r++) {
+            const panels = panelsIn(rows[r]).filter((p) => p !== dragged);
+            const rect = rows[r].getBoundingClientRect();
+            const inThisRow = y < rect.bottom || r === rows.length - 1;
+            if (inThisRow) {
+                let pos = panels.length;
+                for (let i = 0; i < panels.length; i++) {
+                    const pr = panels[i].getBoundingClientRect();
+                    if (x < pr.left + pr.width / 2) { pos = i; break; }
+                }
+                return { position, index: flatBefore + pos };
+            }
+            flatBefore += panels.length;
         }
-        return { position, index };
+        return { position, index: flatBefore };
     }
 
-    /** Move a panel to a dock + index (creating the dock if needed). Honours the cap. */
+    /** Move a panel to a dock at a flat index (creating the dock if needed); rows re-chunk. */
     function movePanelTo(panel: HTMLElement, position: DockPosition, index: number): void {
         const fromPos = panel.getAttribute('data-brx-panel') as DockPosition | null;
         const fromDock = fromPos ? docks.get(fromPos) : undefined;
-        let toDock = docks.get(position);
-        if (!toDock) toDock = ensureDock(position, {});
+        const toDock = docks.get(position) || ensureDock(position, {});
 
-        // Cap (excluding the panel itself when it's already in this dock).
-        if (rowPanels(toDock).filter((p) => p !== panel).length >= MAX_PANELS) {
-            // eslint-disable-next-line no-console
-            console.warn('[BRX_Common] dock "' + position + '" is full (max ' + MAX_PANELS + ') — move ignored.');
-            return;
-        }
-
-        const ref = visibleRowPanels(toDock).filter((p) => p !== panel)[index] || null;
-        toDock.row.insertBefore(panel, ref);
+        // Target's current flat order (excluding the panel), then insert it at `index`.
+        const others = orderedVisiblePanels(toDock).filter((p) => p !== panel);
+        toDock.rowsEl.appendChild(panel); // placement is decided by layoutDockSlots below
         panel.setAttribute('data-brx-panel', position);
         const id = panel.dataset.brxId;
         if (id) { const entry = registry.get(id); if (entry) entry.position = position; }
 
-        // The receiving dock gained a panel → equalise (per "add resets to equal").
-        rowPanels(toDock).forEach((p) => { delete p.dataset.brxWidth; });
-        layoutRow(toDock);
+        const flat = others.slice();
+        flat.splice(Math.max(0, Math.min(index, flat.length)), 0, panel);
+        flat.forEach((p) => { delete p.dataset.brxWidth; }); // receiving dock equalises
+        flat.forEach((p, i) => { if (p.dataset.brxId) persistPanel(p.dataset.brxId, { position, order: i }); });
+        layoutDockSlots(toDock, flat);
         saveDockLayout(toDock);
 
         if (fromDock && fromDock !== toDock) {
-            layoutRow(fromDock);
+            repackRows(fromDock);
             saveDockLayout(fromDock);
-            // Source emptied → iframe reclaims its space.
-            if (fromPos) cleanupDock(fromPos);
+            if (fromPos) cleanupDock(fromPos); // source emptied → iframe reclaims its space
         }
         emitChange();
     }
 
     /**
      * Re-flow BOTH docks for the live drag preview: the dragged panel is removed
-     * from flow (display:none via DRAGGING_CLASS), a placeholder marks the drop
-     * slot, every dock's slots equalise, dividers are dropped, and a dock with no
-     * visible slots collapses (so the iframe reclaims its space) — so the user
-     * sees both ends change as they drag.
+     * from flow (display:none), a panel-sized placeholder marks the drop slot at
+     * the flat index, both docks re-chunk into equal-width rows, and a dock with no
+     * visible slots collapses (iframe reclaims the space) — so the user sees both
+     * ends change as they drag.
      */
     function reflowDragPreview(placeholder: HTMLElement, dragged: HTMLElement, target: { position: DockPosition; index: number }): void {
         if (placeholder.parentElement) placeholder.remove();
-        const into = docks.get(target.position);
-        if (into) {
-            const panels = visibleRowPanels(into).filter((p) => p !== dragged);
-            into.row.insertBefore(placeholder, panels[target.index] || null);
-        }
         (['top', 'bottom'] as DockPosition[]).forEach((pos) => {
             const d = docks.get(pos);
             if (!d) return;
-            Array.prototype.slice.call(d.row.querySelectorAll('.' + DIVIDER_CLASS)).forEach((x: Element) => x.remove());
-            const slots = visibleRowPanels(d).filter((p) => p !== dragged);
-            slots.forEach((p) => { p.style.flex = '1 1 0'; });
-            const hasSlot = slots.length > 0 || placeholder.parentElement === d.row;
-            d.el.style.display = hasSlot ? '' : 'none';
+            const slots = orderedVisiblePanels(d).filter((p) => p !== dragged) as HTMLElement[];
+            if (pos === target.position) {
+                slots.splice(Math.max(0, Math.min(target.index, slots.length)), 0, placeholder);
+            }
+            layoutDockSlots(d, slots, true); // equal-width preview
+            // Keep BOTH docks visible during the drag — an empty one shows a dashed
+            // drop zone (via DOCK_DRAG_CLASS) so it can be targeted.
+            d.el.style.display = '';
         });
     }
 
-    /** Wire a header grip so dragging it moves its panel between / within docks. */
-    function wireGripDrag(grip: HTMLElement, panel: HTMLElement): void {
-        grip.addEventListener('pointerdown', (e: PointerEvent) => {
-            if (e.button !== 0) return;
-            e.preventDefault();
-            e.stopPropagation();
-            grip.setPointerCapture?.(e.pointerId);
+    /** True if the pointer landed on (or inside) an interactive control. */
+    function isInteractiveTarget(t: EventTarget | null): boolean {
+        const el = t as HTMLElement | null;
+        return !!el?.closest?.('button, a, input, select, textarea, label, [contenteditable], [data-brx-no-drag]');
+    }
 
-            // Ghost following the cursor (a light label — never a clone, so the
-            // CSS panel's editor isn't duplicated).
-            const ghost = document.createElement('div');
-            ghost.className = GHOST_CLASS;
-            const titleEl = panel.querySelector('.' + PANEL_TITLE_CLASS) as HTMLElement | null;
-            const headEl = panel.querySelector('.' + PANEL_HEADER_CLASS) as HTMLElement | null;
-            ghost.textContent = (titleEl?.textContent || headEl?.textContent || 'Panel').trim().slice(0, 28) || 'Panel';
-            document.body.appendChild(ghost);
+    /**
+     * Make the WHOLE header a drag handle: press-and-drag anywhere on it to move
+     * the panel between / within docks. A press on an interactive control (button,
+     * input, select, the close ✕, etc.) is ignored, and a real drag only begins
+     * after a small movement threshold — so plain clicks on the header still work.
+     */
+    function wireHeaderDrag(header: HTMLElement, panel: HTMLElement): void {
+        header.addEventListener('pointerdown', (e: PointerEvent) => {
+            if (e.button !== 0) return;
+            if (isInteractiveTarget(e.target)) return; // let controls do their thing
+
+            const startX = e.clientX;
+            const startY = e.clientY;
+            let started = false;
+            let ghost: HTMLElement | null = null;
+            let placeholder: HTMLElement | null = null;
+            let target = resolveDropTarget(startX, startY, panel);
+
             const moveGhost = (ev: PointerEvent): void => {
-                ghost.style.transform = 'translate(' + (ev.clientX + 12) + 'px,' + (ev.clientY + 12) + 'px)';
+                if (ghost) ghost.style.transform = 'translate(' + (ev.clientX + 12) + 'px,' + (ev.clientY + 12) + 'px)';
             };
 
-            // Remove the dragged panel from flow + show the placeholder slot.
-            panel.classList.add(DRAGGING_CLASS);
-            const placeholder = document.createElement('div');
-            placeholder.className = PLACEHOLDER_CLASS;
-
-            let target = resolveDropTarget(e.clientX, e.clientY, panel);
-            moveGhost(e);
-            reflowDragPreview(placeholder, panel, target);
+            const begin = (): void => {
+                started = true;
+                ghost = document.createElement('div');
+                ghost.className = GHOST_CLASS;
+                const titleEl = panel.querySelector('.' + PANEL_TITLE_CLASS) as HTMLElement | null;
+                const headEl = panel.querySelector('.' + PANEL_HEADER_CLASS) as HTMLElement | null;
+                ghost.textContent = (titleEl?.textContent || headEl?.textContent || 'Panel').trim().slice(0, 28) || 'Panel';
+                document.body.appendChild(ghost);
+                panel.classList.add(DRAGGING_CLASS);
+                placeholder = document.createElement('div');
+                placeholder.className = PLACEHOLDER_CLASS;
+                // Make BOTH docks exist + show a drop zone, so a panel can be dragged
+                // into an empty dock (otherwise there'd be nothing to aim at).
+                (['top', 'bottom'] as DockPosition[]).forEach((pos) => {
+                    const d = docks.get(pos) || ensureDock(pos, {});
+                    d.el.classList.add(DOCK_DRAG_CLASS);
+                });
+            };
 
             const onMove = (ev: PointerEvent): void => {
+                if (!started) {
+                    if (Math.abs(ev.clientX - startX) < 4 && Math.abs(ev.clientY - startY) < 4) return;
+                    begin(); // crossed the threshold — it's a drag, not a click
+                }
                 moveGhost(ev);
                 target = resolveDropTarget(ev.clientX, ev.clientY, panel);
-                reflowDragPreview(placeholder, panel, target);
+                reflowDragPreview(placeholder!, panel, target);
             };
-            const onUp = (ev: PointerEvent): void => {
-                grip.releasePointerCapture?.(ev.pointerId);
+            const onUp = (): void => {
                 window.removeEventListener('pointermove', onMove);
                 window.removeEventListener('pointerup', onUp);
-                if (ghost.parentElement) ghost.remove();
-                if (placeholder.parentElement) placeholder.remove();
-                // Restore any docks we temporarily collapsed during the preview.
-                docks.forEach((d) => { d.el.style.display = ''; });
+                if (!started) return; // a click, not a drag — leave everything as-is
+                if (ghost?.parentElement) ghost.remove();
+                if (placeholder?.parentElement) placeholder.remove();
+                docks.forEach((d) => { d.el.style.display = ''; d.el.classList.remove(DOCK_DRAG_CLASS); });
                 panel.classList.remove(DRAGGING_CLASS);
                 movePanelTo(panel, target.position, target.index);
+                // Drop the empty drop-zone dock(s) we may have spun up for the drag.
+                cleanupDock('top');
+                cleanupDock('bottom');
             };
             window.addEventListener('pointermove', onMove);
             window.addEventListener('pointerup', onUp);
@@ -638,7 +709,7 @@ declare global {
             active = true;
             moved = false;
             startY = e.clientY;
-            startH = state.el.offsetHeight;
+            startH = state.height; // per-row height (the dock grows with rows)
             bar.setPointerCapture?.(e.pointerId);
             window.addEventListener('pointermove', onMove);
             window.addEventListener('pointerup', onUp);
@@ -665,19 +736,38 @@ declare global {
 
     function setDockHeight(state: DockState, px: number): void {
         state.height = clampHeight(state, px);
-        if (!state.collapsed) state.el.style.height = state.height + 'px';
+        // The dock height is content-driven (it grows with rows); the per-row
+        // height is what we set, so all rows resize together.
+        if (!state.collapsed) applyRowHeights(state);
     }
 
     /** Apply collapsed state to the DOM only (no persist / notify). */
     function applyCollapsedDom(state: DockState): void {
         if (state.collapsed) {
-            state.el.setAttribute('data-collapsed', 'true');
-            state.el.style.height = ''; // CSS forces auto → fits the bar
+            state.el.setAttribute('data-collapsed', 'true'); // CSS hides the rows → bar only
         } else {
             state.el.removeAttribute('data-collapsed');
-            state.el.style.height = state.height + 'px';
+            applyRowHeights(state);
         }
         updateChevron(state);
+    }
+
+    /** Find the registry entry for a panel element (small n — ≤3 per dock). */
+    function entryForEl(el: HTMLElement): PanelEntry | undefined {
+        let found: PanelEntry | undefined;
+        registry.forEach((e) => { if (e.el === el) found = e; });
+        return found;
+    }
+
+    /** Notify EVERY panel in a dock that it collapsed/expanded (per-panel callbacks). */
+    function notifyDockCollapse(state: DockState, collapsed: boolean): void {
+        rowPanels(state).forEach((el) => {
+            try {
+                entryForEl(el)?.onCollapse?.(collapsed);
+            } catch {
+                /* a panel's callback throwing must not break the dock */
+            }
+        });
     }
 
     function setDockCollapsed(state: DockState, collapsed: boolean): void {
@@ -685,7 +775,7 @@ declare global {
         state.collapsed = collapsed;
         applyCollapsedDom(state);
         persistDock(state.position, { collapsed });
-        state.onCollapse?.(collapsed);
+        notifyDockCollapse(state, collapsed);
         emitChange();
     }
 
@@ -697,8 +787,7 @@ declare global {
      */
     function setPanelHidden(dock: DockState, panel: HTMLElement, hidden: boolean): void {
         panel.style.display = hidden ? 'none' : '';
-        if (hidden && panel.parentElement === dock.row) dock.row.appendChild(panel);
-        layoutRow(dock); // re-equalise + dividers among the remaining visible panels
+        repackRows(dock); // hidden panels are parked outside rows; visible ones re-chunk
         const anyVisible = visibleRowPanels(dock).length > 0;
         dock.el.style.display = anyVisible ? '' : 'none';
         emitChange();
@@ -707,11 +796,7 @@ declare global {
     // ── Dock containers ─────────────────────────────────────────────────────
     function ensureDock(position: DockPosition, opts: RegisterOptions): DockState {
         const existing = docks.get(position);
-        if (existing) {
-            // Let a later register update the collapse callback / clamps.
-            if (opts.onCollapseChange) existing.onCollapse = opts.onCollapseChange;
-            return existing;
-        }
+        if (existing) return existing; // collapse callbacks are per-panel now (on the entry)
 
         const preview = getPreview()!;
         const wrapper = getWrapper()!;
@@ -723,8 +808,8 @@ declare global {
         if (position === 'top') preview.insertBefore(el, wrapper);
         else preview.insertBefore(el, wrapper.nextSibling);
 
-        const row = document.createElement('div');
-        row.className = ROW_CLASS;
+        const rowsEl = document.createElement('div');
+        rowsEl.className = ROWS_CLASS;
 
         const saved = loadLayout().docks[position] || {};
         const height = typeof saved.height === 'number' ? saved.height : (opts.defaultHeight ?? DEFAULT_HEIGHT);
@@ -734,25 +819,24 @@ declare global {
             el,
             bar: null,
             chevron: null,
-            row,
+            rowsEl,
             position,
             height,
             collapsed,
             min: opts.minHeight ?? DEFAULT_MIN,
             max: opts.maxHeight ?? Infinity,
             resizable: opts.resizable !== false,
-            onCollapse: opts.onCollapseChange,
         };
-        el.style.height = height + 'px';
+        // No explicit dock height — it's content-driven (bar + rows) and grows with rows.
 
         if (state.resizable) state.bar = createBar(state);
         // Bar sits on the iframe-facing edge: top of a bottom dock, bottom of a top dock.
         if (position === 'top') {
-            el.appendChild(row);
+            el.appendChild(rowsEl);
             if (state.bar) el.appendChild(state.bar);
         } else {
             if (state.bar) el.appendChild(state.bar);
-            el.appendChild(row);
+            el.appendChild(rowsEl);
         }
 
         // Reflect the restored/initial collapsed state in the DOM (no notify yet —
@@ -797,18 +881,10 @@ declare global {
 
         const dock = ensureDock(position, o);
 
-        // Enforce the per-dock panel cap. If the dock was just created empty for
-        // this (rejected) panel, clean it back up so it doesn't linger.
-        if (rowPanels(dock).length >= MAX_PANELS) {
-            // eslint-disable-next-line no-console
-            console.warn('[BRX_Common] dock "' + dock.position + '" is full (max ' + MAX_PANELS + ' panels) — register ignored.');
-            cleanupDock(dock.position);
-            return null;
-        }
-
-        // Panels live in the dock's flex row.
+        // Panels live in the dock's rows (chunked into rows of MAX_PER_ROW). No
+        // per-dock cap any more — a 4th+ panel just wraps to a new row.
         if (o.id) el.dataset.brxId = id; // enables width/order persistence for this panel
-        dock.row.appendChild(el);
+        dock.rowsEl.appendChild(el); // placement is decided by repackRows() below
         el.setAttribute('data-brx-panel', dock.position);
 
         if (persisted && persisted.width != null) {
@@ -819,16 +895,16 @@ declare global {
             rowPanels(dock).forEach((p) => { delete p.dataset.brxWidth; });
         }
 
-        sortDockByOrder(dock); // honour persisted order (and DnD order across reloads)
-        layoutRow(dock);
+        repackRows(dock); // honours persisted order + chunks into rows of MAX_PER_ROW
 
-        registry.set(id, { el, position: dock.position });
+        registry.set(id, { el, position: dock.position, onCollapse: o.onCollapseChange });
         if (o.id) saveDockLayout(dock);
 
-        // Inform the caller of the restored/initial collapsed state (the DOM
-        // already reflects it from ensureDock) so it can mirror it — fired via
-        // the callback directly so it runs even when the value equals the default.
-        dock.onCollapse?.(dock.collapsed);
+        // Inform THIS panel of the restored/initial collapsed state (the DOM
+        // already reflects it from ensureDock) so it can mirror it — fired even
+        // when the value equals the default. Other panels already in the dock keep
+        // their state; they aren't re-notified just because a sibling joined.
+        o.onCollapseChange?.(dock.collapsed);
         emitChange();
 
         // Resolve the panel's CURRENT dock each call so the handle keeps working
@@ -868,11 +944,13 @@ declare global {
         // its reference and may re-register it later (e.g. detach → reattach) or
         // dispose of it.
         const host = entry.el.parentElement;
-        if (host && host.classList.contains(ROW_CLASS)) host.removeChild(entry.el);
+        if (host && (host.classList.contains(ROW_CLASS) || host.classList.contains(ROWS_CLASS))) {
+            host.removeChild(entry.el);
+        }
         registry.delete(id);
         const dock = docks.get(entry.position);
         if (dock) {
-            layoutRow(dock); // re-flow remaining panels + dividers
+            repackRows(dock); // re-chunk remaining panels into rows
             saveDockLayout(dock); // persist the new order/widths
         }
         cleanupDock(entry.position);
@@ -967,7 +1045,8 @@ declare global {
 
         const handle = register(el, o);
 
-        wireGripDrag(grip, el);
+        // The whole header is the drag handle (the grip is just a visual cue).
+        wireHeaderDrag(header, el);
 
         if (closeBtn) {
             closeBtn.addEventListener('click', () => {
