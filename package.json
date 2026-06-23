@@ -1,0 +1,38 @@
+{
+  "name": "brx-common-panels",
+  "version": "0.10.0",
+  "description": "Shared, collision-free dock manager for Bricks Builder add-ons — dock UI panels above/below the preview iframe via window.BRX_Common.panels.",
+  "license": "GPL-2.0-or-later",
+  "author": "WPEasy / Alan Blair",
+  "type": "module",
+  "main": "dist/brx-common-panels.js",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "homepage": "https://github.com/wpeasy/brx-common-panels#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wpeasy/brx-common-panels.git"
+  },
+  "bugs": {
+    "url": "https://github.com/wpeasy/brx-common-panels/issues"
+  },
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --format=iife --target=es2017 --outfile=dist/brx-common-panels.js --banner:js=\"/* brx-common-panels — https://github.com/wpeasy/brx-common-panels (GPL-2.0-or-later) */\"",
+    "build:min": "esbuild src/index.ts --bundle --minify --format=iife --target=es2017 --outfile=dist/brx-common-panels.min.js"
+  },
+  "keywords": [
+    "bricks",
+    "bricks-builder",
+    "wordpress",
+    "panel",
+    "dock",
+    "iframe"
+  ],
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}
