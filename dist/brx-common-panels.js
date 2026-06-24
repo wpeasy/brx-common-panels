@@ -22,7 +22,7 @@
   (function bootstrap() {
     if (typeof window === "undefined" || typeof document === "undefined") return;
     if (window.BRX_Common && window.BRX_Common.panels) return;
-    const VERSION = "0.13.0";
+    const VERSION = "0.16.0";
     const PREVIEW_ID = "bricks-preview";
     const WRAPPER_ID = "bricks-builder-iframe-wrapper";
     const HOST_CLASS = "brx-common-host";
@@ -43,16 +43,30 @@
     const PLACEHOLDER_CLASS = "brx-common-dock__placeholder";
     const DRAGGING_CLASS = "brx-common-panel--dragging";
     const DOCK_DRAG_CLASS = "brx-common-dock--drag";
+    const DRAG_ACTIVE_CLASS = "brx-common-drag-active";
     const STYLE_ID = "brx-common-panels-style";
     const LS_KEY = "brx-common-panels";
     const DEFAULT_HEIGHT = 300;
     const DEFAULT_MIN = 80;
     const MAX_PER_ROW = 3;
     const PANEL_MIN_WIDTH = 80;
+    const PANEL_MIN_HEIGHT = 60;
+    const ALL_POSITIONS = ["top", "bottom", "left", "right"];
+    const SIDE = (p) => p === "left" || p === "right";
     const registry = /* @__PURE__ */ new Map();
     const docks = /* @__PURE__ */ new Map();
     const listeners = /* @__PURE__ */ new Set();
     let seq = 0;
+    let enabledPositions = ALL_POSITIONS.slice();
+    function permittedPositions(allowed) {
+      const base = allowed && allowed.length ? allowed : ALL_POSITIONS;
+      return base.filter((p) => enabledPositions.includes(p));
+    }
+    function resolvePosition(want, allowed) {
+      var _a;
+      const ok = permittedPositions(allowed);
+      return ok.includes(want) ? want : (_a = ok[0]) != null ? _a : want;
+    }
     function getWrapper() {
       return document.getElementById(WRAPPER_ID);
     }
@@ -70,13 +84,42 @@
       const style = document.createElement("style");
       style.id = STYLE_ID;
       style.textContent = [
-        // Layout host (class is robust to a renamed #bricks-preview; id kept as fallback).
-        "#" + PREVIEW_ID + ",." + HOST_CLASS + "{display:flex;flex-direction:column;}",
-        "#" + WRAPPER_ID + "{flex:1 1 auto !important;height:auto !important;min-height:0 !important;}",
-        // Dock container.
-        "." + DOCK_CLASS + "{flex:0 0 auto;position:relative;display:flex;flex-direction:column;min-height:0;box-sizing:border-box;}",
+        // Layout host: a 3x3 grid. Top/bottom docks span the full width (rows 1/3);
+        // left/right docks flank the center (column 1/3 of row 2); the iframe wrapper
+        // sits in the center cell. Empty side columns collapse to 0 width, so a
+        // top/bottom-only layout behaves exactly like the previous flex column.
+        "#" + PREVIEW_ID + ",." + HOST_CLASS + "{display:grid !important;grid-template-columns:auto minmax(0,1fr) auto;grid-template-rows:auto minmax(0,1fr) auto;}",
+        // width/margin are deliberately NON-important: Bricks sets the responsive
+        // canvas width as an INLINE style (e.g. 768px), which overrides width:100%;
+        // on RESET (inline width removed) width:100% fills the center cell again.
+        // margin-inline:auto centers an explicit responsive width. height:auto
+        // !important beats Bricks' inline height; the grid cell stretch fills it.
+        // max-width:100% !important caps the wrapper to the centre cell so an
+        // inline responsive width (or Bricks' full-canvas inline width) can't spill
+        // it over the left/right docks. width:100% (non-important) fills the cell on
+        // reset; margin-inline:auto centres an explicit (smaller) responsive width.
+        "#" + WRAPPER_ID + "{grid-column:2;grid-row:2;height:auto !important;min-height:0 !important;min-width:0 !important;max-width:100% !important;width:100%;margin-inline:auto;}",
+        // Dock placement by edge.
+        "." + DOCK_CLASS + '[data-position="top"]{grid-column:1 / -1;grid-row:1;}',
+        "." + DOCK_CLASS + '[data-position="bottom"]{grid-column:1 / -1;grid-row:3;}',
+        "." + DOCK_CLASS + '[data-position="left"]{grid-column:1;grid-row:2;}',
+        "." + DOCK_CLASS + '[data-position="right"]{grid-column:3;grid-row:2;}',
+        // Dock container — top/bottom stack bar+rows vertically (default).
+        "." + DOCK_CLASS + "{position:relative;display:flex;flex-direction:column;min-height:0;min-width:0;box-sizing:border-box;}",
         "." + DOCK_CLASS + '[data-collapsed="true"]{height:auto !important;}',
         "." + DOCK_CLASS + ":empty{display:none;}",
+        // ── Side docks (left/right): a vertical strip — flex ROW so the chrome bar
+        //    sits on the inner (iframe-facing) edge and a single column of panels
+        //    fills the height. The rows container width = the dock's resizable width. ──
+        "." + DOCK_CLASS + '[data-position="left"],.' + DOCK_CLASS + '[data-position="right"]{flex-direction:row;height:100%;min-width:0;}',
+        "." + DOCK_CLASS + '[data-position="left"]>.' + ROWS_CLASS + ",." + DOCK_CLASS + '[data-position="right"]>.' + ROWS_CLASS + "{flex:1 1 auto;height:100%;min-height:0;}",
+        "." + DOCK_CLASS + '[data-position="left"]>.' + BAR_CLASS + ",." + DOCK_CLASS + '[data-position="right"]>.' + BAR_CLASS + "{height:auto;width:10px;cursor:ew-resize;}",
+        // Single-column panels in a side dock: stack vertically, resize vertically.
+        "." + DOCK_CLASS + '[data-position="left"] [data-brx-panel],.' + DOCK_CLASS + '[data-position="right"] [data-brx-panel]{flex:1 1 0;min-height:' + PANEL_MIN_HEIGHT + "px;min-width:0;overflow:hidden;}",
+        // Horizontal divider variant (between vertically-stacked side-dock panels).
+        "." + DIVIDER_CLASS + "--h{flex:0 0 4px !important;width:auto !important;height:4px !important;cursor:ns-resize !important;}",
+        // Side-dock drop placeholder is a horizontal strip (min-height, not -width).
+        "." + DOCK_CLASS + '[data-position="left"] .' + PLACEHOLDER_CLASS + ",." + DOCK_CLASS + '[data-position="right"] .' + PLACEHOLDER_CLASS + "{min-width:0;min-height:" + PANEL_MIN_HEIGHT + "px;}",
         // Rows container: vertical stack — each row holds up to MAX_PER_ROW
         // panels side by side; a 4th panel wraps to a new row beneath. The dock
         // height is content-driven (it grows taller as rows are added).
@@ -90,14 +133,18 @@
         // a dashed drop-zone hint so a panel can be dropped into it.
         "." + DOCK_CLASS + "." + DOCK_DRAG_CLASS + " ." + ROWS_CLASS + "{min-height:46px;}",
         "." + DOCK_CLASS + "." + DOCK_DRAG_CLASS + " ." + ROWS_CLASS + ":empty{margin:4px;border:2px dashed var(--builder-color-accent,#3b82f6);background:rgba(59,130,246,.07);border-radius:3px;}",
+        // Side docks need a WIDTH drop zone while dragging (an empty one is 0‑wide).
+        // min-width overrides the inline width:0 of an empty dock without resizing a
+        // populated one (whose extent width is already > 46).
+        "." + DOCK_CLASS + '[data-position="left"].' + DOCK_DRAG_CLASS + ">." + ROWS_CLASS + ",." + DOCK_CLASS + '[data-position="right"].' + DOCK_DRAG_CLASS + ">." + ROWS_CLASS + "{min-width:46px;}",
         // Vertical divider between adjacent panels — drag to resize horizontally.
         "." + DIVIDER_CLASS + "{flex:0 0 4px;align-self:stretch;cursor:ew-resize;background:var(--builder-border,#3a3a3a);touch-action:none;}",
         "." + DIVIDER_CLASS + ":hover{background:var(--builder-color-accent,#3b82f6);}",
         // Chrome bar on the iframe-facing edge: the WHOLE bar toggles collapse
         // (click) and resizes (drag); a centered light chevron indicates state.
-        "." + BAR_CLASS + "{flex:0 0 auto;display:flex;align-items:center;justify-content:center;height:8px;background:var(--builder-color-accent,#3b82f6);cursor:ns-resize;touch-action:none;user-select:none;}",
+        "." + BAR_CLASS + "{flex:0 0 auto;display:flex;align-items:center;justify-content:center;height:10px;background:#3b3b3b;cursor:ns-resize;touch-action:none;user-select:none;}",
         "." + DOCK_CLASS + '[data-collapsed="true"]>.' + BAR_CLASS + "{cursor:pointer;}",
-        "." + CHEVRON_CLASS + "{pointer-events:none;color:#000;font:600 8px/1 system-ui,sans-serif;opacity:.85;}",
+        "." + CHEVRON_CLASS + "{pointer-events:none;color:#cfcfcf;font:600 8px/1 system-ui,sans-serif;opacity:.85;}",
         "." + BAR_CLASS + ":hover ." + CHEVRON_CLASS + "{opacity:1;}",
         // ── Panel template (create()) — consistent header+body, Bricks builder colours, tight padding ──
         "." + PANEL_CLASS + "{display:flex;flex-direction:column;height:100%;min-height:0;background:var(--builder-bg,#1e1e1e);color:var(--builder-color,#e0e0e0);font-family:inherit;font-size:12px;box-sizing:border-box;}",
@@ -117,6 +164,12 @@
         // so BOTH docks reflow live (source redistributes/empties, target opens
         // a slot). A placeholder shows where it will land.
         "." + DRAGGING_CLASS + "{display:none !important;}",
+        // While a panel drag is in progress, kill text selection everywhere (so the
+        // pointer sweeping across the page — including the preview iframe — doesn't
+        // paint a blue selection) and make the iframe ignore the pointer entirely
+        // (drop targeting is coordinate-based, so this costs nothing).
+        "." + DRAG_ACTIVE_CLASS + ",." + DRAG_ACTIVE_CLASS + " *{user-select:none !important;-webkit-user-select:none !important;}",
+        "." + DRAG_ACTIVE_CLASS + " #" + WRAPPER_ID + "{pointer-events:none !important;}",
         "." + PLACEHOLDER_CLASS + "{flex:1 1 0;min-width:" + PANEL_MIN_WIDTH + "px;align-self:stretch;box-sizing:border-box;border:2px dashed var(--builder-color-accent,#3b82f6);background:rgba(59,130,246,.10);border-radius:2px;pointer-events:none;}",
         // Ghost that follows the cursor.
         "." + GHOST_CLASS + "{position:fixed;left:0;top:0;z-index:2147483646;pointer-events:none;white-space:nowrap;padding:4px 10px;border-radius:3px;font:600 12px/1 system-ui,sans-serif;background:var(--bricks-bg-dark,#18191d);color:var(--bricks-color-light,#e6e9ee);border:1px solid var(--builder-color-accent,#3b82f6);box-shadow:0 6px 18px rgba(0,0,0,.45);opacity:.92;}",
@@ -125,11 +178,13 @@
         "." + PANEL_CLOSE_CLASS + ":hover{opacity:1;}",
         "." + PANEL_BODY_CLASS + "{flex:1 1 auto;min-height:0;overflow:auto;padding:6px 8px;}",
         "." + PANEL_BODY_CLASS + "--flush{padding:0;}",
-        // Scrollbars matching the Bricks builder UI (thin, accent thumb on bg-3 track).
-        "." + PANEL_BODY_CLASS + "{scrollbar-width:thin;scrollbar-color:var(--builder-color-accent,#3b82f6) var(--builder-bg-3,#2a2a2a);}",
-        "." + PANEL_BODY_CLASS + "::-webkit-scrollbar{width:8px;height:8px;}",
-        "." + PANEL_BODY_CLASS + "::-webkit-scrollbar-track{background-color:var(--builder-bg-3,#2a2a2a);}",
-        "." + PANEL_BODY_CLASS + "::-webkit-scrollbar-thumb{background-color:var(--builder-color-accent,#3b82f6);}"
+        // Narrow scrollbars matching the Bricks builder UI (accent thumb on bg-3
+        // track) — applied to the panel AND every descendant, so nested scroll
+        // areas (grids, editors) get the same slim scrollbar.
+        "." + PANEL_CLASS + ",." + PANEL_CLASS + " *{scrollbar-width:thin;scrollbar-color:var(--builder-color-accent,#3b82f6) var(--builder-bg-3,#2a2a2a);}",
+        "." + PANEL_CLASS + " ::-webkit-scrollbar,." + PANEL_CLASS + "::-webkit-scrollbar{width:6px;height:6px;}",
+        "." + PANEL_CLASS + " ::-webkit-scrollbar-track,." + PANEL_CLASS + "::-webkit-scrollbar-track{background-color:var(--builder-bg-3,#2a2a2a);}",
+        "." + PANEL_CLASS + " ::-webkit-scrollbar-thumb,." + PANEL_CLASS + "::-webkit-scrollbar-thumb{background-color:var(--builder-color-accent,#3b82f6);border-radius:3px;}"
       ].join("");
       (document.head || document.documentElement).appendChild(style);
     }
@@ -170,6 +225,8 @@
       }
     }
     function chevronChar(position, collapsed) {
+      if (position === "left") return collapsed ? "\u25B8" : "\u25C2";
+      if (position === "right") return collapsed ? "\u25C2" : "\u25B8";
       if (position === "bottom") return collapsed ? "\u25B4" : "\u25BE";
       return collapsed ? "\u25BE" : "\u25B4";
     }
@@ -202,6 +259,10 @@
       });
     }
     function applyRowHeights(dock) {
+      if (SIDE(dock.position)) {
+        dock.rowsEl.style.width = visibleRowPanels(dock).length ? dock.height + "px" : "0px";
+        return;
+      }
       Array.prototype.slice.call(dock.rowsEl.querySelectorAll("." + ROW_CLASS)).forEach((r) => {
         r.style.height = dock.height + "px";
       });
@@ -209,6 +270,19 @@
     function layoutDockSlots(dock, slots, equal = false) {
       const hidden = rowPanels(dock).filter((p) => p.style.display === "none");
       dock.rowsEl.textContent = "";
+      if (SIDE(dock.position)) {
+        const hasPanels = slots.some((s) => s.hasAttribute("data-brx-panel"));
+        dock.rowsEl.style.width = hasPanels ? dock.height + "px" : "0px";
+        slots.forEach((slot, i) => {
+          if (slot.hasAttribute("data-brx-panel")) {
+            slot.style.flex = (equal ? "1" : slot.dataset.brxWidth || "1") + " 1 0";
+          }
+          if (i > 0) dock.rowsEl.appendChild(createDivider(true));
+          dock.rowsEl.appendChild(slot);
+        });
+        hidden.forEach((p) => dock.rowsEl.appendChild(p));
+        return;
+      }
       for (let i = 0; i < slots.length; i += MAX_PER_ROW) {
         const rowEl = document.createElement("div");
         rowEl.className = ROW_CLASS;
@@ -230,26 +304,29 @@
     function repackRows(dock) {
       layoutDockSlots(dock, orderedVisiblePanels(dock));
     }
-    function createDivider() {
+    function createDivider(vertical = false) {
       const divider = document.createElement("div");
-      divider.className = DIVIDER_CLASS;
-      let startX = 0;
+      divider.className = DIVIDER_CLASS + (vertical ? " " + DIVIDER_CLASS + "--h" : "");
+      const MIN = vertical ? PANEL_MIN_HEIGHT : PANEL_MIN_WIDTH;
+      const sizeOf = (el) => vertical ? el.offsetHeight : el.offsetWidth;
+      const coordOf = (e) => vertical ? e.clientY : e.clientX;
+      let start = 0;
       let prev = null;
       let next = null;
       let startPrev = 0;
       let startNext = 0;
       const onMove = (e) => {
         if (!prev || !next) return;
-        const delta = e.clientX - startX;
+        const delta = coordOf(e) - start;
         let a = startPrev + delta;
         let b = startNext - delta;
-        if (a < PANEL_MIN_WIDTH) {
-          b -= PANEL_MIN_WIDTH - a;
-          a = PANEL_MIN_WIDTH;
+        if (a < MIN) {
+          b -= MIN - a;
+          a = MIN;
         }
-        if (b < PANEL_MIN_WIDTH) {
-          a -= PANEL_MIN_WIDTH - b;
-          b = PANEL_MIN_WIDTH;
+        if (b < MIN) {
+          a -= MIN - b;
+          b = MIN;
         }
         prev.style.flex = a + " 1 0";
         next.style.flex = b + " 1 0";
@@ -259,10 +336,10 @@
         (_a = divider.releasePointerCapture) == null ? void 0 : _a.call(divider, e.pointerId);
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
-        const rowEl = divider.parentElement;
-        const dock = rowEl ? dockForEl(rowEl) : void 0;
-        if (rowEl) panelsIn(rowEl).forEach((p) => {
-          p.dataset.brxWidth = String(p.offsetWidth);
+        const container = divider.parentElement;
+        const dock = container ? dockForEl(container) : void 0;
+        if (container) panelsIn(container).forEach((p) => {
+          p.dataset.brxWidth = String(sizeOf(p));
         });
         if (dock) saveDockLayout(dock);
         emitChange();
@@ -272,17 +349,17 @@
         if (e.button !== 0) return;
         prev = divider.previousElementSibling;
         next = divider.nextElementSibling;
-        const rowEl = divider.parentElement;
-        if (!prev || !next || !rowEl) return;
+        const container = divider.parentElement;
+        if (!prev || !next || !container) return;
         e.preventDefault();
-        const panels = panelsIn(rowEl);
-        const widths = panels.map((p) => p.offsetWidth);
+        const panels = panelsIn(container);
+        const sizes = panels.map(sizeOf);
         panels.forEach((p, i) => {
-          p.style.flex = widths[i] + " 1 0";
+          p.style.flex = sizes[i] + " 1 0";
         });
-        startPrev = widths[panels.indexOf(prev)];
-        startNext = widths[panels.indexOf(next)];
-        startX = e.clientX;
+        startPrev = sizes[panels.indexOf(prev)];
+        startNext = sizes[panels.indexOf(next)];
+        start = coordOf(e);
         (_a = divider.setPointerCapture) == null ? void 0 : _a.call(divider, e.pointerId);
         window.addEventListener("pointermove", onMove);
         window.addEventListener("pointerup", onUp);
@@ -290,21 +367,44 @@
       return divider;
     }
     function resolveDropTarget(x, y, dragged) {
-      const within = (d) => {
+      var _a, _b, _c, _d;
+      const permitted = permittedPositions((_a = entryForEl(dragged)) == null ? void 0 : _a.allowed);
+      const fallback = dragged.getAttribute("data-brx-panel") || permitted[0] || "bottom";
+      if (!permitted.length) return { position: fallback, index: 0 };
+      const overDock = (p) => {
+        const d = docks.get(p);
         if (!d) return false;
         const r = d.el.getBoundingClientRect();
-        return y >= r.top && y <= r.bottom;
+        return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
       };
-      let position;
-      if (within(docks.get("top"))) position = "top";
-      else if (within(docks.get("bottom"))) position = "bottom";
-      else {
-        const wrapper = getWrapper();
-        const wr = wrapper == null ? void 0 : wrapper.getBoundingClientRect();
-        position = wr ? y < wr.top + wr.height / 2 ? "top" : "bottom" : "bottom";
+      let position = (_b = permitted.find(overDock)) != null ? _b : null;
+      if (!position) {
+        const wr = (_c = getWrapper()) == null ? void 0 : _c.getBoundingClientRect();
+        if (wr) {
+          const dist = {
+            top: Math.abs(y - wr.top),
+            bottom: Math.abs(y - wr.bottom),
+            left: Math.abs(x - wr.left),
+            right: Math.abs(x - wr.right)
+          };
+          position = (_d = permitted.slice().sort((a, b) => dist[a] - dist[b])[0]) != null ? _d : null;
+        }
       }
+      if (!position) return { position: fallback, index: 0 };
       const target = docks.get(position);
       if (!target) return { position, index: 0 };
+      if (SIDE(position)) {
+        const panels = panelsIn(target.rowsEl).filter((p) => p !== dragged);
+        let idx = panels.length;
+        for (let i = 0; i < panels.length; i++) {
+          const pr = panels[i].getBoundingClientRect();
+          if (y < pr.top + pr.height / 2) {
+            idx = i;
+            break;
+          }
+        }
+        return { position, index: idx };
+      }
       const rows = Array.prototype.slice.call(target.rowsEl.querySelectorAll("." + ROW_CLASS));
       let flatBefore = 0;
       for (let r = 0; r < rows.length; r++) {
@@ -338,17 +438,23 @@
         const entry = registry.get(id);
         if (entry) entry.position = position;
       }
+      const sameDock = !!fromDock && fromDock === toDock;
       const flat = others.slice();
       flat.splice(Math.max(0, Math.min(index, flat.length)), 0, panel);
-      flat.forEach((p) => {
-        delete p.dataset.brxWidth;
-      });
+      if (!sameDock) {
+        flat.forEach((p) => {
+          delete p.dataset.brxWidth;
+        });
+      }
       flat.forEach((p, i) => {
         if (p.dataset.brxId) persistPanel(p.dataset.brxId, { position, order: i });
       });
       layoutDockSlots(toDock, flat);
       saveDockLayout(toDock);
-      if (fromDock && fromDock !== toDock) {
+      if (fromDock && !sameDock) {
+        rowPanels(fromDock).forEach((p) => {
+          delete p.dataset.brxWidth;
+        });
         repackRows(fromDock);
         saveDockLayout(fromDock);
         if (fromPos) cleanupDock(fromPos);
@@ -357,14 +463,17 @@
     }
     function reflowDragPreview(placeholder, dragged, target) {
       if (placeholder.parentElement) placeholder.remove();
-      ["top", "bottom"].forEach((pos) => {
+      const origin = dragged.getAttribute("data-brx-panel");
+      ALL_POSITIONS.forEach((pos) => {
         const d = docks.get(pos);
         if (!d) return;
         const slots = orderedVisiblePanels(d).filter((p) => p !== dragged);
         if (pos === target.position) {
           slots.splice(Math.max(0, Math.min(target.index, slots.length)), 0, placeholder);
         }
-        layoutDockSlots(d, slots, true);
+        const isGaining = pos === target.position && pos !== origin;
+        const isLosing = pos === origin && pos !== target.position;
+        layoutDockSlots(d, slots, isGaining || isLosing);
         d.el.style.display = "";
       });
     }
@@ -387,7 +496,13 @@
           if (ghost) ghost.style.transform = "translate(" + (ev.clientX + 12) + "px," + (ev.clientY + 12) + "px)";
         };
         const begin = () => {
+          var _a, _b;
           started = true;
+          document.documentElement.classList.add(DRAG_ACTIVE_CLASS);
+          try {
+            (_a = window.getSelection()) == null ? void 0 : _a.removeAllRanges();
+          } catch (e2) {
+          }
           ghost = document.createElement("div");
           ghost.className = GHOST_CLASS;
           const titleEl = panel.querySelector("." + PANEL_TITLE_CLASS);
@@ -397,9 +512,10 @@
           panel.classList.add(DRAGGING_CLASS);
           placeholder = document.createElement("div");
           placeholder.className = PLACEHOLDER_CLASS;
-          ["top", "bottom"].forEach((pos) => {
+          permittedPositions((_b = entryForEl(panel)) == null ? void 0 : _b.allowed).forEach((pos) => {
             const d = docks.get(pos) || ensureDock(pos, {});
             d.el.classList.add(DOCK_DRAG_CLASS);
+            if (d.collapsed) d.el.removeAttribute("data-collapsed");
           });
         };
         const onMove = (ev) => {
@@ -414,17 +530,20 @@
         const onUp = () => {
           window.removeEventListener("pointermove", onMove);
           window.removeEventListener("pointerup", onUp);
+          document.documentElement.classList.remove(DRAG_ACTIVE_CLASS);
           if (!started) return;
           if (ghost == null ? void 0 : ghost.parentElement) ghost.remove();
           if (placeholder == null ? void 0 : placeholder.parentElement) placeholder.remove();
           docks.forEach((d) => {
             d.el.style.display = "";
             d.el.classList.remove(DOCK_DRAG_CLASS);
+            if (d.collapsed) d.el.setAttribute("data-collapsed", "true");
           });
           panel.classList.remove(DRAGGING_CLASS);
+          const dropDock = docks.get(target.position);
+          if (dropDock == null ? void 0 : dropDock.collapsed) setDockCollapsed(dropDock, false);
           movePanelTo(panel, target.position, target.index);
-          cleanupDock("top");
-          cleanupDock("bottom");
+          ALL_POSITIONS.forEach((pos) => cleanupDock(pos));
         };
         window.addEventListener("pointermove", onMove);
         window.addEventListener("pointerup", onUp);
@@ -442,13 +561,16 @@
       bar.appendChild(chevron);
       state.chevron = chevron;
       updateChevron(state);
-      let startY = 0;
+      let startCoord = 0;
       let startH = 0;
       let active = false;
       let moved = false;
+      const side = SIDE(state.position);
+      const coordOf = (e) => side ? e.clientX : e.clientY;
+      const deltaFor = (c) => state.position === "bottom" || state.position === "right" ? startCoord - c : c - startCoord;
       const onMove = (e) => {
         if (!active || state.collapsed) return;
-        const delta = state.position === "bottom" ? startY - e.clientY : e.clientY - startY;
+        const delta = deltaFor(coordOf(e));
         if (!moved && Math.abs(delta) < DRAG_THRESHOLD) return;
         moved = true;
         setDockHeight(state, startH + delta);
@@ -473,7 +595,7 @@
         e.preventDefault();
         active = true;
         moved = false;
-        startY = e.clientY;
+        startCoord = coordOf(e);
         startH = state.height;
         (_a = bar.setPointerCapture) == null ? void 0 : _a.call(bar, e.pointerId);
         window.addEventListener("pointermove", onMove);
@@ -489,7 +611,8 @@
     }
     function clampHeight(state, px) {
       const preview = getPreview();
-      const ceiling = state.max === Infinity ? preview ? Math.round(preview.clientHeight * 0.85) : px : state.max;
+      const extent = preview ? SIDE(state.position) ? preview.clientWidth : preview.clientHeight : 0;
+      const ceiling = state.max === Infinity ? preview ? Math.round(extent * 0.85) : px : state.max;
       return Math.max(state.min, Math.min(px, ceiling));
     }
     function setDockHeight(state, px) {
@@ -534,6 +657,7 @@
       repackRows(dock);
       const anyVisible = visibleRowPanels(dock).length > 0;
       dock.el.style.display = anyVisible ? "" : "none";
+      if (panel.dataset.brxId) persistPanel(panel.dataset.brxId, { hidden });
       emitChange();
     }
     function ensureDock(position, opts) {
@@ -565,7 +689,7 @@
         resizable: opts.resizable !== false
       };
       if (state.resizable) state.bar = createBar(state);
-      if (position === "top") {
+      if (position === "top" || position === "left") {
         el.appendChild(rowsEl);
         if (state.bar) el.appendChild(state.bar);
       } else {
@@ -580,8 +704,9 @@
       const state = docks.get(position);
       if (!state) return;
       if (rowPanels(state).length > 0) return;
-      state.el.remove();
-      docks.delete(position);
+      if (registry.size > 0) return;
+      docks.forEach((d) => d.el.remove());
+      docks.clear();
     }
     function emitChange() {
       if (!listeners.size) return;
@@ -594,14 +719,16 @@
       });
     }
     function register(el, opts) {
-      var _a;
+      var _a, _b;
       if (!el) return null;
       const o = opts || {};
       ensureStylesheet();
       if (!getWrapper() || !getPreview()) return null;
       const id = o.id || "brx-panel-" + ++seq;
       const persisted = o.id ? loadLayout().panels[id] : void 0;
-      const position = (persisted == null ? void 0 : persisted.position) || (o.position === "top" ? "top" : "bottom");
+      const allowed = o.allowedPositions;
+      const want = (persisted == null ? void 0 : persisted.position) || o.position || "bottom";
+      const position = resolvePosition(want, allowed);
       const dock = ensureDock(position, o);
       if (o.id) el.dataset.brxId = id;
       dock.rowsEl.appendChild(el);
@@ -611,12 +738,38 @@
       } else {
         rowPanels(dock).forEach((p) => {
           delete p.dataset.brxWidth;
+          if (p.dataset.brxId) persistPanel(p.dataset.brxId, { width: void 0 });
         });
       }
       repackRows(dock);
-      registry.set(id, { el, position: dock.position, onCollapse: o.onCollapseChange });
-      if (o.id) saveDockLayout(dock);
-      (_a = o.onCollapseChange) == null ? void 0 : _a.call(o, dock.collapsed);
+      registry.set(id, {
+        el,
+        position: dock.position,
+        allowed,
+        onCollapse: o.onCollapseChange,
+        title: o.title
+      });
+      if (o.id) {
+        const layout = loadLayout().panels;
+        let order = (_a = layout[id]) == null ? void 0 : _a.order;
+        if (order == null) {
+          let maxOrder = -1;
+          rowPanels(dock).forEach((p) => {
+            var _a2;
+            const pid = p.dataset.brxId;
+            if (!pid || pid === id) return;
+            const po = (_a2 = layout[pid]) == null ? void 0 : _a2.order;
+            if (typeof po === "number" && po > maxOrder) maxOrder = po;
+          });
+          order = maxOrder + 1;
+        }
+        const w = el.dataset.brxWidth ? parseFloat(el.dataset.brxWidth) : void 0;
+        persistPanel(id, { position: dock.position, order, width: w });
+      }
+      if (o.id && (persisted == null ? void 0 : persisted.hidden)) {
+        setPanelHidden(dock, el, true);
+      }
+      (_b = o.onCollapseChange) == null ? void 0 : _b.call(o, dock.collapsed);
       emitChange();
       const curDock = () => docks.get(el.getAttribute("data-brx-panel")) || dock;
       return {
@@ -661,6 +814,24 @@
       cleanupDock(entry.position);
       emitChange();
     }
+    function resolveId(idOrEl) {
+      if (typeof idOrEl === "string") return registry.has(idOrEl) ? idOrEl : null;
+      let found = null;
+      registry.forEach((entry, key) => {
+        if (entry.el === idOrEl) found = key;
+      });
+      return found;
+    }
+    function panelTitle(entry, id) {
+      var _a, _b;
+      if (entry.title) return entry.title;
+      const titleEl = entry.el.querySelector("." + PANEL_TITLE_CLASS);
+      const fromTitle = (_a = titleEl == null ? void 0 : titleEl.textContent) == null ? void 0 : _a.trim();
+      if (fromTitle) return fromTitle;
+      const headEl = entry.el.querySelector("." + PANEL_HEADER_CLASS);
+      const fromHead = (_b = headEl == null ? void 0 : headEl.textContent) == null ? void 0 : _b.trim();
+      return fromHead || id;
+    }
     function list() {
       const out = [];
       registry.forEach((entry, id) => {
@@ -670,10 +841,24 @@
           el: entry.el,
           position: entry.position,
           height: entry.el.offsetHeight,
-          collapsed: !!(dock == null ? void 0 : dock.collapsed)
+          collapsed: !!(dock == null ? void 0 : dock.collapsed),
+          hidden: entry.el.style.display === "none",
+          title: panelTitle(entry, id)
         });
       });
       return out;
+    }
+    function setHidden(idOrEl, hidden) {
+      const id = resolveId(idOrEl);
+      if (id == null) return;
+      const entry = registry.get(id);
+      const dock = docks.get(entry.position);
+      if (dock) setPanelHidden(dock, entry.el, hidden);
+    }
+    function isHidden(idOrEl) {
+      const id = resolveId(idOrEl);
+      if (id == null) return false;
+      return registry.get(id).el.style.display === "none";
     }
     function on(event, cb) {
       if (event !== "change" || typeof cb !== "function") return () => void 0;
@@ -744,7 +929,27 @@
       }
       return { handle, el, header, body, footer };
     }
-    const api = { register, create, unregister, recalc, list, on, version: VERSION };
+    function setEnabledPositions(positions) {
+      const next = ALL_POSITIONS.filter((p) => positions.includes(p));
+      enabledPositions = next.length ? next : ["bottom"];
+      registry.forEach((entry) => {
+        const dest = resolvePosition(entry.position, entry.allowed);
+        if (dest !== entry.position) {
+          const destDock = docks.get(dest) || ensureDock(dest, {});
+          movePanelTo(entry.el, dest, orderedVisiblePanels(destDock).length);
+        }
+      });
+      ALL_POSITIONS.forEach((p) => {
+        if (enabledPositions.includes(p)) return;
+        const d = docks.get(p);
+        if (d && rowPanels(d).length === 0) {
+          d.el.remove();
+          docks.delete(p);
+        }
+      });
+      emitChange();
+    }
+    const api = { register, create, unregister, setHidden, isHidden, setEnabledPositions, recalc, list, on, version: VERSION };
     window.BRX_Common = window.BRX_Common || {};
     window.BRX_Common.panels = api;
     if (getWrapper()) {

@@ -1,19 +1,21 @@
 # brx-common-panels
 
 > A tiny, dependency-free **dock manager** for [Bricks Builder](https://bricksbuilder.io/) add‑ons.
-> Dock UI panels **above or below the preview iframe** in one shared, collision‑free way.
+> Dock UI panels on **any edge of the preview iframe** (top / bottom / left / right) in one shared, collision‑free way.
 
 `brx-common-panels` gives every Bricks add‑on a single, official‑feeling place to put
 persistent UI by the preview canvas — a CSS editor, a query inspector, a console, a
-layout bar, etc. Instead of each plugin fighting over the iframe's height, there is **one
+layout bar, etc. Instead of each plugin fighting over the iframe's size, there is **one
 authoritative owner of the layout**, exposed on a shared `window.BRX_Common.panels`
-namespace. Two plugins that both want a strip under the canvas now simply cooperate.
+namespace. Two plugins that both want a strip by the canvas now simply cooperate.
 
-- **Zero dependencies**, ~12 KB, single IIFE. Builder‑editor only — **no front‑end footprint.**
+- **Zero dependencies**, ~15 KB, single IIFE. Builder‑editor only — **no front‑end footprint.**
 - **Idempotent**: the first copy to load wins; an official Bricks‑provided registry (or another plugin's bundled copy) always wins if present.
-- **Multi‑panel docks**: panels sit side‑by‑side (up to 3 per row, wrapping to a new row), with drag‑to‑resize dividers.
-- **Drag‑and‑drop** panels between the top and bottom docks (and reorder within a dock).
-- **Layout persistence** across reloads (position, order, width, height, collapsed).
+- **Four docks** — `top` / `bottom` (horizontal, panels in rows of up to 3) and `left` / `right` (vertical strips, a single column of panels). The host app chooses which edges are enabled.
+- **Drag‑and‑drop** panels between any enabled docks (and reorder within a dock), with drag‑to‑resize dividers.
+- **Per‑panel `allowedPositions`** — a panel can declare which edges it accepts (e.g. a wide‑only panel → `['top','bottom']`).
+- **Show / hide** a panel without unregistering it, independent of collapse.
+- **Layout persistence** across reloads (position, order, size, height/width, collapsed, hidden).
 - **Panel template** with header / body / footer slots, a drag grip, optional close button — so every plugin's panel looks consistent.
 
 ---
@@ -29,7 +31,7 @@ namespace. Two plugins that both want a strip under the canvas now simply cooper
   - [`panels.create(options)`](#panelscreateoptions--templated-panel)
   - [`panels.register(el, options)`](#panelsregisterel-options--raw-element)
   - [`PanelHandle`](#panelhandle)
-  - [`panels.unregister` / `list` / `on` / `recalc` / `version`](#other-methods)
+  - [`unregister` / `setHidden` / `isHidden` / `setEnabledPositions` / `list` / `on` / `recalc` / `version`](#other-methods)
 - [Persistence](#persistence)
 - [Styling &amp; theming](#styling--theming)
 - [CSS class reference](#css-class-reference)
@@ -58,17 +60,27 @@ registry appears.
 ## How it works
 
 The module injects **one** stylesheet that turns the iframe's container
-(`#bricks-preview`) into a flex column and forces the iframe wrapper to fill it:
+(`#bricks-preview`) into a **3×3 CSS grid** and pins the iframe wrapper to the centre cell:
 
 ```css
-#bricks-preview { display: flex; flex-direction: column; }
-#bricks-builder-iframe-wrapper { flex: 1 1 auto !important; height: auto !important; min-height: 0 !important; }
+#bricks-preview {
+    display: grid !important;
+    grid-template-columns: auto minmax(0,1fr) auto;  /* left · center · right */
+    grid-template-rows:    auto minmax(0,1fr) auto;  /* top  · center · bottom */
+}
+#bricks-builder-iframe-wrapper { grid-column: 2; grid-row: 2; height: auto !important; min-height: 0 !important; width: 100%; margin-inline: auto; }
 ```
 
-Per the CSS cascade, an `!important` **author** rule beats a non‑important **inline**
-style — so Bricks can keep writing its inline `height` and the iframe still fills the
-remaining space. **No `calc()`, no per‑write `ResizeObserver`, no inline‑style war.** Dock
-containers take their own (drag‑resizable) height; the iframe fills whatever's left.
+Top/bottom docks span the full width (rows 1 / 3); left/right docks flank the centre
+(columns 1 / 3 of row 2). **Empty side columns collapse to 0**, so a top/bottom‑only layout
+behaves exactly like a simple flex column — no regression for existing consumers.
+
+`height: auto !important` beats Bricks' non‑important **inline** height, so the iframe fills
+the centre row no matter what Bricks writes. `width: 100%` is deliberately **not**
+`!important`: Bricks sets the responsive‑preview width as an inline style (e.g. `768px`),
+which overrides it; when Bricks resets by removing that inline width, `width: 100%` fills
+the cell again, and `margin-inline: auto` keeps an explicit responsive width centred.
+**No `calc()`, no per‑write `ResizeObserver`, no inline‑style war.**
 
 ---
 
@@ -113,7 +125,8 @@ footer panel and registers it in one call:
 ```js
 const { handle, header, body, footer } = window.BRX_Common.panels.create({
     id: 'my-plugin-panel',   // stable id → layout persists across reloads
-    position: 'bottom',      // 'bottom' (default) | 'top'
+    position: 'bottom',      // 'bottom' (default) | 'top' | 'left' | 'right'
+    allowedPositions: ['top', 'bottom'], // optional — restrict which edges accept this panel
     title: 'My Panel',       // or pass `header:` with your own HTML/Node
     body: '<p>Hello</p>',    // HTML string or a DOM node
     footer: 'Ready',         // optional footer (omit for none)
@@ -134,6 +147,20 @@ handle.unregister();      // remove it entirely
 
 That's it — your panel docks below the canvas, shares the chrome (drag grip, resize/
 collapse bar) with every other panel, and its layout survives reloads.
+
+### Choosing which edges are available
+
+The **host app** (not individual panels) decides which docks exist, via
+`setEnabledPositions()` — wire it to your own setting:
+
+```js
+// e.g. allow only the top and bottom edges
+window.BRX_Common.panels.setEnabledPositions(['top', 'bottom']);
+```
+
+Disabling an edge that holds a panel relocates that panel to its first allowed+enabled
+edge and removes the now‑empty dock. A panel further narrows this for itself with
+`allowedPositions` (the two are intersected).
 
 ### Try it right now (console)
 
@@ -156,18 +183,27 @@ BRX_Common.panels.create({ id:'demo-3', position:'bottom', title:'Panel Three', 
 
 ## Concepts
 
-**Docks.** There are two docks — `top` and `bottom` — created lazily as siblings of the
-iframe wrapper inside `#bricks-preview`. The **dock** is the vertical unit: it owns the
-drag‑resize/collapse **bar** on its iframe‑facing edge, its **height**, and its
-**collapsed** state.
+**Docks.** There are up to four docks — `top`, `bottom`, `left`, `right` — created lazily as
+siblings of the iframe wrapper inside `#bricks-preview` and placed by the grid. Each dock
+owns the drag‑resize/collapse **bar** on its iframe‑facing edge, its **size**, and its
+**collapsed** state. The host app chooses which edges are enabled via
+[`setEnabledPositions()`](#other-methods) (default: all four).
 
-**Panels fill; docks size.** A dock arranges its panels in **rows of up to 3**,
-side‑by‑side and equal‑width by default; a 4th panel **wraps to a new row** and the dock
-grows taller. Panels just fill their slot — they carry no resize chrome of their own. A
-draggable **divider** between adjacent panels in a row resizes them horizontally.
+**Horizontal vs vertical docks.**
+- **`top` / `bottom`** are horizontal: panels sit in **rows of up to 3**, equal‑width by
+  default; a 4th panel **wraps to a new row** and the dock grows taller. A vertical
+  **divider** between adjacent panels in a row resizes them horizontally. The bar resizes
+  the dock's **height**.
+- **`left` / `right`** are vertical strips: a **single column** of panels stacked
+  top‑to‑bottom (no wrapping). A horizontal **divider** between stacked panels resizes them
+  vertically. The bar (on the inner, iframe‑facing edge) resizes the dock's **width**.
+
+**Panels fill; docks size.** Panels just fill their slot — they carry no resize chrome of
+their own.
 
 **The bar.** A slim accent bar sits on each dock's iframe‑facing edge. **Click it** to
-collapse the dock to just the bar; **drag it** to resize the dock's height.
+collapse the dock to just the bar; **drag it** to resize the dock (height for top/bottom,
+width for left/right).
 
 **Dragging.** The **whole header** is a drag handle (a `⠿` grip at the far‑left hints at
 it). Press and drag the header to move the panel to the other dock or reorder it within a
@@ -221,9 +257,10 @@ register(el: HTMLElement, options?: RegisterOptions): PanelHandle | null
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `position` | `'top' \| 'bottom'` | `'bottom'` | Which dock to place the panel in. A persisted position for this `id` wins. |
-| `id` | `string` | auto | Stable id → enables layout persistence (position / order / width). Auto‑generated (and **not** persisted) if omitted. |
-| `defaultHeight` | `number` | `300` | Initial dock height (px) when nothing is persisted. |
+| `position` | `'top' \| 'bottom' \| 'left' \| 'right'` | `'bottom'` | Which dock to place the panel in. A persisted position for this `id` wins; an unavailable position falls back per `allowedPositions` ∩ enabled. |
+| `allowedPositions` | `DockPosition[]` | all four | Which edges this panel may live in / be dragged to. Use to constrain a panel that only works in certain orientations (e.g. a wide‑only editor → `['top','bottom']`). Intersected with the globally‑enabled positions. |
+| `id` | `string` | auto | Stable id → enables layout persistence (position / order / size / hidden). Auto‑generated (and **not** persisted) if omitted. |
+| `defaultHeight` | `number` | `300` | Initial dock extent (px) when nothing is persisted — height for top/bottom, width for left/right. |
 | `minHeight` | `number` | `80` | Resize clamp minimum (px). |
 | `maxHeight` | `number` | 85% of preview | Resize clamp maximum (px). |
 | `resizable` | `boolean` | `true` | Whether the dock shows its resize/collapse bar. |
@@ -242,7 +279,7 @@ Returned by `register()` (and inside `create()`'s result). Methods resolve the p
 | Member | Type | Description |
 |---|---|---|
 | `id` | `string` | The panel's id. |
-| `position` | `'top' \| 'bottom'` | The panel's current dock (live getter). |
+| `position` | `'top' \| 'bottom' \| 'left' \| 'right'` | The panel's current dock (live getter). |
 | `unregister()` | `() => void` | Remove the panel from its dock (leaves the element in the DOM for you to dispose). |
 | `setHeight(px)` | `(number) => void` | Set the dock height (clamped). |
 | `setCollapsed(c)` | `(boolean) => void` | Collapse the dock to just its bar / expand it. |
@@ -255,9 +292,12 @@ Returned by `register()` (and inside `create()`'s result). Methods resolve the p
 | Member | Type | Description |
 |---|---|---|
 | `unregister(idOrEl)` | `(string \| HTMLElement) => void` | Remove a panel by id or element. |
-| `list()` | `() => PanelInfo[]` | Snapshot: `{ id, el, position, height, collapsed }[]`. |
-| `on('change', cb)` | `(cb) => () => void` | Subscribe to layout changes (register / unregister / move / resize / collapse). Returns an unsubscribe fn. |
-| `recalc()` | `() => void` | Re‑assert the layout stylesheet (rarely needed — flex handles reflow). |
+| `setHidden(idOrEl, hidden)` | `(string \| HTMLElement, boolean) => void` | Hide/show a registered panel by id or element (display only — it stays registered; independent of collapse). No‑op for an unknown panel. |
+| `isHidden(idOrEl)` | `(string \| HTMLElement) => boolean` | Whether a registered panel is currently hidden. |
+| `setEnabledPositions(positions)` | `(DockPosition[]) => void` | Set which edges are globally enabled. Panels can't be registered into / dragged to a disabled edge; existing panels in a now‑disabled dock are relocated to their first allowed+enabled position. Defaults to all four. |
+| `list()` | `() => PanelInfo[]` | Snapshot: `{ id, el, position, height, collapsed, hidden, title }[]`. |
+| `on('change', cb)` | `(cb) => () => void` | Subscribe to layout changes (register / unregister / move / resize / collapse / hide). Returns an unsubscribe fn. |
+| `recalc()` | `() => void` | Re‑assert the layout stylesheet (rarely needed — the grid handles reflow). |
 | `version` | `string` | Engine version, for feature detection. |
 
 ---
@@ -270,7 +310,7 @@ Layout is saved to `localStorage` under the key **`brx-common-panels`** and rest
 ```jsonc
 {
   "panels": {
-    "my-plugin-panel": { "position": "bottom", "order": 0, "width": 412 }
+    "my-plugin-panel": { "position": "bottom", "order": 0, "width": 412, "hidden": false }
   },
   "docks": {
     "bottom": { "height": 280, "collapsed": false }
@@ -279,10 +319,14 @@ Layout is saved to `localStorage` under the key **`brx-common-panels`** and rest
 ```
 
 - **Restore happens by id.** Whichever code re‑registers `my-plugin-panel` on the next load
-  gets its dock, order and width back. Panels created ad‑hoc (no stable id) don't persist.
-- **`width`** is a flex‑grow weight (a divider position). It's applied on restore; **adding
-  a brand‑new panel** to a dock re‑equalises all widths.
-- **Height & collapsed** are per‑dock.
+  gets its dock, order, size and hidden state back. Panels created ad‑hoc (no stable id)
+  don't persist.
+- **`width`** is a flex‑grow weight (a divider position) — for top/bottom it's a horizontal
+  weight, for left/right a vertical one. It's applied on restore; **adding a brand‑new
+  panel** to a dock re‑equalises the others.
+- **`hidden`** persists per panel; a panel with no saved record defaults to **visible**.
+- **`height`** (the dock's resizable extent — height for top/bottom, width for left/right)
+  and **collapsed** are per‑dock.
 
 ---
 
@@ -308,12 +352,13 @@ full‑bleed editor).
 
 | Class | Element |
 |---|---|
-| `.brx-common-host` | The flex host (the iframe wrapper's parent) |
-| `.brx-common-dock` | A dock container (`[data-position="top\|bottom"]`, `[data-collapsed="true"]`) |
+| `.brx-common-host` | The grid host (the iframe wrapper's parent, `#bricks-preview`) |
+| `.brx-common-dock` | A dock container (`[data-position="top\|bottom\|left\|right"]`, `[data-collapsed="true"]`) |
 | `.brx-common-dock__bar` | The resize/collapse bar |
 | `.brx-common-dock__chevron` | The collapse chevron inside the bar |
-| `.brx-common-dock__row` | The flex row that holds the dock's panels |
-| `.brx-common-dock__divider` | Draggable divider between two panels |
+| `.brx-common-dock__rows` | The panel container (rows for top/bottom, a single column for left/right) |
+| `.brx-common-dock__row` | A flex row that holds top/bottom panels (up to 3) |
+| `.brx-common-dock__divider` (`--h`) | Draggable divider between two panels (`--h` = horizontal, side docks) |
 | `.brx-common-dock__placeholder` | Drop slot shown while dragging |
 | `.brx-common-panel` | A templated panel root (`[data-brx-panel]`, `[data-brx-id]`) |
 | `.brx-common-panel__grip` | The `⠿` drag grip |
@@ -345,11 +390,13 @@ ids** (e.g. `myplugin-css`) so your persisted layout never clashes with another 
 
 ## Known limitations
 
-- **Widths reset on add / move.** Dragging a panel into a dock, or registering a brand‑new
-  panel, re‑equalises that dock's widths (by design). Divider resizes persist until the
-  panel set changes.
-- **One bar per dock.** Collapse and height are dock‑level, so all panels in a dock collapse
-  and resize (vertically) together. Horizontal divider resize is per‑panel.
+- **Sizes reset on add / cross‑dock move.** Dragging a panel into a different dock, or
+  registering a brand‑new panel, re‑equalises that dock's panel sizes (by design). A
+  same‑dock reorder keeps them. Divider resizes persist until the panel set changes.
+- **One bar per dock.** Collapse and the dock extent are dock‑level, so all panels in a dock
+  collapse and resize together. The per‑panel divider resize is the other axis.
+- **Side docks are single‑column.** `left` / `right` stack panels vertically with no
+  wrapping (unlike `top` / `bottom`, which wrap into rows of 3).
 
 ---
 
