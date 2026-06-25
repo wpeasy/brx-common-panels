@@ -19,10 +19,11 @@
   };
 
   // packages/brx-common-panels/src/index.ts
+  var BRX_COMMON_READY_EVENT = "brx-common:ready";
   (function bootstrap() {
     if (typeof window === "undefined" || typeof document === "undefined") return;
     if (window.BRX_Common && window.BRX_Common.panels) return;
-    const VERSION = "0.16.0";
+    const VERSION = "0.17.0";
     const PREVIEW_ID = "bricks-preview";
     const WRAPPER_ID = "bricks-builder-iframe-wrapper";
     const HOST_CLASS = "brx-common-host";
@@ -56,6 +57,8 @@
     const registry = /* @__PURE__ */ new Map();
     const docks = /* @__PURE__ */ new Map();
     const listeners = /* @__PURE__ */ new Set();
+    const addListeners = /* @__PURE__ */ new Set();
+    const removeListeners = /* @__PURE__ */ new Set();
     let seq = 0;
     let enabledPositions = ALL_POSITIONS.slice();
     function permittedPositions(allowed) {
@@ -718,6 +721,26 @@
         }
       });
     }
+    function emitAdd(id) {
+      if (!addListeners.size) return;
+      const info = list().find((p) => p.id === id);
+      if (!info) return;
+      addListeners.forEach((cb) => {
+        try {
+          cb(info);
+        } catch (e) {
+        }
+      });
+    }
+    function emitRemove(id) {
+      if (!removeListeners.size) return;
+      removeListeners.forEach((cb) => {
+        try {
+          cb({ id });
+        } catch (e) {
+        }
+      });
+    }
     function register(el, opts) {
       var _a, _b;
       if (!el) return null;
@@ -770,6 +793,7 @@
         setPanelHidden(dock, el, true);
       }
       (_b = o.onCollapseChange) == null ? void 0 : _b.call(o, dock.collapsed);
+      emitAdd(id);
       emitChange();
       const curDock = () => docks.get(el.getAttribute("data-brx-panel")) || dock;
       return {
@@ -812,6 +836,7 @@
         saveDockLayout(dock);
       }
       cleanupDock(entry.position);
+      emitRemove(id);
       emitChange();
     }
     function resolveId(idOrEl) {
@@ -861,9 +886,23 @@
       return registry.get(id).el.style.display === "none";
     }
     function on(event, cb) {
-      if (event !== "change" || typeof cb !== "function") return () => void 0;
-      listeners.add(cb);
-      return () => listeners.delete(cb);
+      if (typeof cb !== "function") return () => void 0;
+      if (event === "add") {
+        const c = cb;
+        addListeners.add(c);
+        return () => addListeners.delete(c);
+      }
+      if (event === "remove") {
+        const c = cb;
+        removeListeners.add(c);
+        return () => removeListeners.delete(c);
+      }
+      if (event === "change") {
+        const c = cb;
+        listeners.add(c);
+        return () => listeners.delete(c);
+      }
+      return () => void 0;
     }
     function recalc() {
       ensureStylesheet();
@@ -952,6 +991,10 @@
     const api = { register, create, unregister, setHidden, isHidden, setEnabledPositions, recalc, list, on, version: VERSION };
     window.BRX_Common = window.BRX_Common || {};
     window.BRX_Common.panels = api;
+    try {
+      window.dispatchEvent(new CustomEvent(BRX_COMMON_READY_EVENT, { detail: { version: VERSION } }));
+    } catch (e) {
+    }
     if (getWrapper()) {
       ensureStylesheet();
     } else if (typeof MutationObserver !== "undefined") {

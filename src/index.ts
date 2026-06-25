@@ -134,6 +134,23 @@ export interface TemplatedPanel {
 }
 
 type ChangeListener = (info: PanelInfo[]) => void;
+type AddListener = (panel: PanelInfo) => void;
+type RemoveListener = (info: { id: string }) => void;
+
+/**
+ * Readiness — load-order-safe.
+ * You can't subscribe to `window.BRX_Common.panels.on(...)` before the registry
+ * exists, so readiness is signalled by a DOM event on `window` instead. The
+ * registry that actually installs dispatches `brx-common:ready` (detail: { version }).
+ * Consumers that may load EARLIER than the registry use:
+ *
+ *   if (window.BRX_Common?.panels) init();                 // already loaded
+ *   else window.addEventListener('brx-common:ready', init, { once: true });
+ *
+ * The synchronous check covers "registry loaded first"; the event covers
+ * "registry loads later (deferred/async/optimised)".
+ */
+export const BRX_COMMON_READY_EVENT = 'brx-common:ready';
 
 export interface BrxCommonPanels {
     register(el: HTMLElement, opts?: RegisterOptions): PanelHandle | null;
@@ -161,6 +178,10 @@ export interface BrxCommonPanels {
     list(): PanelInfo[];
     /** Subscribe to layout changes (register/unregister/move/resize/collapse). Returns an unsubscribe fn. */
     on(event: 'change', cb: ChangeListener): () => void;
+    /** Subscribe to panel registration — fires with the new panel's info. Returns an unsubscribe fn. */
+    on(event: 'add', cb: AddListener): () => void;
+    /** Subscribe to panel removal (unregister / ✕ close) — fires with the removed id. Returns an unsubscribe fn. */
+    on(event: 'remove', cb: RemoveListener): () => void;
     /** Engine version, for feature detection. */
     readonly version: string;
 }
@@ -179,7 +200,7 @@ declare global {
     // if present. Plugins bundling this copy cooperate until Bricks ships it.
     if (window.BRX_Common && window.BRX_Common.panels) return;
 
-    const VERSION = '0.16.0';
+    const VERSION = '0.17.0';
     const PREVIEW_ID = 'bricks-preview';
     const WRAPPER_ID = 'bricks-builder-iframe-wrapper';
     const HOST_CLASS = 'brx-common-host';
@@ -242,6 +263,8 @@ declare global {
     const registry = new Map<string, PanelEntry>();
     const docks = new Map<DockPosition, DockState>();
     const listeners = new Set<ChangeListener>();
+    const addListeners = new Set<AddListener>();
+    const removeListeners = new Set<RemoveListener>();
     let seq = 0;
     let enabledPositions: DockPosition[] = ALL_POSITIONS.slice();
 
@@ -1052,6 +1075,22 @@ declare global {
         });
     }
 
+    function emitAdd(id: string): void {
+        if (!addListeners.size) return;
+        const info = list().find((p) => p.id === id);
+        if (!info) return;
+        addListeners.forEach((cb) => {
+            try { cb(info); } catch { /* a listener throwing must not break the dock */ }
+        });
+    }
+
+    function emitRemove(id: string): void {
+        if (!removeListeners.size) return;
+        removeListeners.forEach((cb) => {
+            try { cb({ id }); } catch { /* a listener throwing must not break the dock */ }
+        });
+    }
+
     function register(el: HTMLElement, opts?: RegisterOptions): PanelHandle | null {
         if (!el) return null;
         const o = opts || {};
@@ -1130,6 +1169,7 @@ declare global {
         // when the value equals the default. Other panels already in the dock keep
         // their state; they aren't re-notified just because a sibling joined.
         o.onCollapseChange?.(dock.collapsed);
+        emitAdd(id);
         emitChange();
 
         // Resolve the panel's CURRENT dock each call so the handle keeps working
@@ -1179,6 +1219,7 @@ declare global {
             saveDockLayout(dock); // persist the new order/widths
         }
         cleanupDock(entry.position);
+        emitRemove(id);
         emitChange();
     }
 
@@ -1232,10 +1273,27 @@ declare global {
         return registry.get(id)!.el.style.display === 'none';
     }
 
-    function on(event: 'change', cb: ChangeListener): () => void {
-        if (event !== 'change' || typeof cb !== 'function') return () => undefined;
-        listeners.add(cb);
-        return () => listeners.delete(cb);
+    function on(
+        event: 'change' | 'add' | 'remove',
+        cb: ChangeListener | AddListener | RemoveListener,
+    ): () => void {
+        if (typeof cb !== 'function') return () => undefined;
+        if (event === 'add') {
+            const c = cb as AddListener;
+            addListeners.add(c);
+            return () => addListeners.delete(c);
+        }
+        if (event === 'remove') {
+            const c = cb as RemoveListener;
+            removeListeners.add(c);
+            return () => removeListeners.delete(c);
+        }
+        if (event === 'change') {
+            const c = cb as ChangeListener;
+            listeners.add(c);
+            return () => listeners.delete(c);
+        }
+        return () => undefined;
     }
 
     function recalc(): void {
@@ -1348,6 +1406,16 @@ declare global {
     const api: BrxCommonPanels = { register, create, unregister, setHidden, isHidden, setEnabledPositions, recalc, list, on, version: VERSION };
     window.BRX_Common = window.BRX_Common || {};
     window.BRX_Common.panels = api;
+
+    // Readiness signal (load-order-safe): the registry that actually installs fires
+    // a DOM event on `window`. Consumers that may evaluate BEFORE this script listen
+    // for it; consumers that load after just see `window.BRX_Common.panels`. The
+    // idempotent guard above means this fires exactly once, for the winning registry.
+    try {
+        window.dispatchEvent(new CustomEvent(BRX_COMMON_READY_EVENT, { detail: { version: VERSION } }));
+    } catch {
+        /* CustomEvent unsupported — consumers fall back to the sync existence check */
+    }
 
     // ── Bootstrap ───────────────────────────────────────────────────────────
     // The preview/wrapper may not exist yet at script-eval time (builder booting).
