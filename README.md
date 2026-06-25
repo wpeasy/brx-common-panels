@@ -32,6 +32,7 @@ namespace. Two plugins that both want a strip by the canvas now simply cooperate
   - [`panels.register(el, options)`](#panelsregisterel-options--raw-element)
   - [`PanelHandle`](#panelhandle)
   - [`unregister` / `setHidden` / `isHidden` / `setEnabledPositions` / `list` / `on` / `recalc` / `version`](#other-methods)
+- [Events](#events)
 - [Persistence](#persistence)
 - [Styling &amp; theming](#styling--theming)
 - [CSS class reference](#css-class-reference)
@@ -296,36 +297,53 @@ Returned by `register()` (and inside `create()`'s result). Methods resolve the p
 | `isHidden(idOrEl)` | `(string \| HTMLElement) => boolean` | Whether a registered panel is currently hidden. |
 | `setEnabledPositions(positions)` | `(DockPosition[]) => void` | Set which edges are globally enabled. Panels can't be registered into / dragged to a disabled edge; existing panels in a now‑disabled dock are relocated to their first allowed+enabled position. Defaults to all four. |
 | `list()` | `() => PanelInfo[]` | Snapshot: `{ id, el, position, height, collapsed, hidden, title }[]`. |
-| `on('change', cb)` | `(cb) => () => void` | Subscribe to layout changes (register / unregister / move / resize / collapse / hide). `cb` gets the full `PanelInfo[]` snapshot. Returns an unsubscribe fn. |
-| `on('add', cb)` | `(cb) => () => void` | A panel was registered. `cb` gets the new panel's `PanelInfo`. (v0.17.0+) |
-| `on('remove', cb)` | `(cb) => () => void` | A panel was removed (unregister / ✕ close). `cb` gets `{ id }`. (v0.17.0+) |
+| `on(event, cb)` | `(event, cb) => () => void` | Subscribe to `'add'` / `'remove'` / `'change'` events — returns an unsubscribe fn. See [Events](#events). |
 | `recalc()` | `() => void` | Re‑assert the layout stylesheet (rarely needed — the grid handles reflow). |
 | `version` | `string` | Engine version, for feature detection. |
 
-### Readiness (`brx-common:ready`) — load‑order‑safe (v0.17.0+)
+---
 
-You can't subscribe to `window.BRX_Common.panels.on(...)` before the registry exists,
-so readiness is a **DOM event on `window`**, not a registry method. The registry that
-actually installs dispatches `brx-common:ready` (`detail: { version }`) exactly once.
-Use this when your code may evaluate **before** the registry script (deferred / async /
-optimised loading):
+## Events
+
+The registry exposes three panel‑lifecycle hooks via `panels.on(event, cb)` (each returns an
+unsubscribe function), plus a separate **load‑order‑safe readiness** DOM event.
+
+### Panel lifecycle — `panels.on(event, cb)` (`'add'` / `'remove'` v0.17.0+)
+
+| Event | Callback | Fires when |
+|---|---|---|
+| `'add'` | `(panel: PanelInfo) => void` | a panel is registered (**v0.17.0+**) |
+| `'remove'` | `(info: { id: string }) => void` | a panel is removed — `unregister()` or a ✕ close (**v0.17.0+**) |
+| `'change'` | `(panels: PanelInfo[]) => void` | any layout change — add / remove / move / resize / collapse / hide (full snapshot) |
+
+Use `add` / `remove` for lifecycle; use `change` (and diff the snapshot) when you need
+move / resize / collapse deltas.
+
+```js
+const off = window.BRX_Common.panels.on('add', (panel) => {
+    console.log('panel docked:', panel.id, panel.position);
+});
+window.BRX_Common.panels.on('remove', ({ id }) => console.log('panel removed:', id));
+// off();  // unsubscribe
+```
+
+### Readiness — `brx-common:ready` (load‑order‑safe, v0.17.0+)
+
+You can't subscribe to `window.BRX_Common.panels.on(...)` before the registry exists, so
+readiness is a **DOM event on `window`**, not a registry method. The registry that actually
+installs dispatches `brx-common:ready` (`detail: { version }`) exactly once. Use it when your
+code may evaluate **before** the registry script (deferred / async / optimised loading):
 
 ```js
 function init() {
-    window.BRX_Common.panels.on('add', (p) => console.log('panel added', p.id));
-    window.BRX_Common.panels.on('remove', ({ id }) => console.log('panel removed', id));
+    window.BRX_Common.panels.on('add', (p) => console.log('added', p.id));
+    window.BRX_Common.panels.on('remove', ({ id }) => console.log('removed', id));
 }
-
-if (window.BRX_Common?.panels) {
-    init();                                                  // registry loaded first
-} else {
-    window.addEventListener('brx-common:ready', init, { once: true }); // it loads later
-}
+if (window.BRX_Common?.panels) init();                                  // registry loaded first
+else window.addEventListener('brx-common:ready', init, { once: true }); // it loads later
 ```
 
-The synchronous check covers "registry loaded first"; the event covers "registry loads
-later". (`add` / `remove` are coarse lifecycle hooks; for move/resize/collapse use
-`on('change', …)` and diff the snapshot if you need deltas.)
+The synchronous check covers "registry loaded first"; the event covers "registry loads later".
 
 ---
 
