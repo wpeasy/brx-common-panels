@@ -1,6 +1,6 @@
 {
   "name": "brx-common-panels",
-  "version": "0.17.0",
+  "version": "0.18.1",
   "description": "Shared, collision-free dock manager for Bricks Builder add-ons — dock UI panels above/below the preview iframe via window.BRX_Common.panels.",
   "license": "GPL-2.0-or-later",
   "author": "WPEasy / Alan Blair",

@@ -23,7 +23,7 @@
   (function bootstrap() {
     if (typeof window === "undefined" || typeof document === "undefined") return;
     if (window.BRX_Common && window.BRX_Common.panels) return;
-    const VERSION = "0.17.0";
+    const VERSION = "0.18.1";
     const PREVIEW_ID = "bricks-preview";
     const WRAPPER_ID = "bricks-builder-iframe-wrapper";
     const HOST_CLASS = "brx-common-host";
@@ -991,20 +991,46 @@
     const api = { register, create, unregister, setHidden, isHidden, setEnabledPositions, recalc, list, on, version: VERSION };
     window.BRX_Common = window.BRX_Common || {};
     window.BRX_Common.panels = api;
-    try {
-      window.dispatchEvent(new CustomEvent(BRX_COMMON_READY_EVENT, { detail: { version: VERSION } }));
-    } catch (e) {
-    }
+    const runReady = (cb) => {
+      try {
+        cb(api);
+      } catch (e) {
+        console.error("[brx-common] onReady callback failed", e);
+      }
+    };
+    let ready = false;
+    const pendingReady = [];
+    const scheduleReady = (cb) => {
+      if (ready) runReady(cb);
+      else pendingReady.push(cb);
+    };
+    const fireReady = () => {
+      if (ready) return;
+      ready = true;
+      pendingReady.splice(0).forEach(runReady);
+      try {
+        window.dispatchEvent(new CustomEvent(BRX_COMMON_READY_EVENT, { detail: { version: VERSION } }));
+      } catch (e) {
+      }
+    };
+    const bc = window.BRX_Common;
+    const queued = Array.isArray(bc.onReady) ? bc.onReady.slice() : [];
+    bc.onReady = { push: (cb) => scheduleReady(cb) };
+    queued.forEach(scheduleReady);
     if (getWrapper()) {
       ensureStylesheet();
+      fireReady();
     } else if (typeof MutationObserver !== "undefined") {
       const boot = new MutationObserver(() => {
         if (getWrapper()) {
           boot.disconnect();
           ensureStylesheet();
+          fireReady();
         }
       });
       boot.observe(document.documentElement, { childList: true, subtree: true });
+    } else {
+      fireReady();
     }
   })();
 })();

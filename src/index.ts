@@ -140,17 +140,30 @@ type RemoveListener = (info: { id: string }) => void;
 /**
  * Readiness — load-order-safe.
  * You can't subscribe to `window.BRX_Common.panels.on(...)` before the registry
- * exists, so readiness is signalled by a DOM event on `window` instead. The
- * registry that actually installs dispatches `brx-common:ready` (detail: { version }).
- * Consumers that may load EARLIER than the registry use:
+ * exists, so readiness is exposed two equivalent ways, both order-independent:
  *
- *   if (window.BRX_Common?.panels) init();                 // already loaded
- *   else window.addEventListener('brx-common:ready', init, { once: true });
+ * 1. `onReady` command queue (recommended — no event wiring, gives you `panels`):
  *
- * The synchronous check covers "registry loaded first"; the event covers
- * "registry loads later (deferred/async/optimised)".
+ *      (window.BRX_Common = window.BRX_Common || {}).onReady ||= [];
+ *      window.BRX_Common.onReady.push((panels) => {
+ *          panels.on('add', (p) => {});
+ *          panels.create({ ... });
+ *      });
+ *
+ *    Push BEFORE or AFTER this script loads — the idempotent guard only checks
+ *    `.panels`, so a pre-seeded queue doesn't block the real registry. On install
+ *    the registry drains the queue, then rewrites its `push` so later callbacks
+ *    fire immediately.
+ *
+ * 2. `brx-common:ready` DOM event on `window` (detail: { version }) + a sync check:
+ *
+ *      if (window.BRX_Common?.panels) init();                 // already loaded
+ *      else window.addEventListener('brx-common:ready', init, { once: true });
  */
 export const BRX_COMMON_READY_EVENT = 'brx-common:ready';
+
+/** A callback queued on `window.BRX_Common.onReady`; invoked with the live registry. */
+export type BrxReadyCallback = (panels: BrxCommonPanels) => void;
 
 export interface BrxCommonPanels {
     register(el: HTMLElement, opts?: RegisterOptions): PanelHandle | null;
@@ -188,7 +201,11 @@ export interface BrxCommonPanels {
 
 declare global {
     interface Window {
-        BRX_Common?: { panels?: BrxCommonPanels } & Record<string, unknown>;
+        BRX_Common?: {
+            panels?: BrxCommonPanels;
+            /** Load-order-safe ready queue — `push(cb)` before or after install. */
+            onReady?: BrxReadyCallback[] | { push(cb: BrxReadyCallback): void };
+        } & Record<string, unknown>;
     }
 }
 
@@ -200,7 +217,7 @@ declare global {
     // if present. Plugins bundling this copy cooperate until Bricks ships it.
     if (window.BRX_Common && window.BRX_Common.panels) return;
 
-    const VERSION = '0.17.0';
+    const VERSION = '0.18.1';
     const PREVIEW_ID = 'bricks-preview';
     const WRAPPER_ID = 'bricks-builder-iframe-wrapper';
     const HOST_CLASS = 'brx-common-host';
@@ -1407,27 +1424,58 @@ declare global {
     window.BRX_Common = window.BRX_Common || {};
     window.BRX_Common.panels = api;
 
-    // Readiness signal (load-order-safe): the registry that actually installs fires
-    // a DOM event on `window`. Consumers that may evaluate BEFORE this script listen
-    // for it; consumers that load after just see `window.BRX_Common.panels`. The
-    // idempotent guard above means this fires exactly once, for the winning registry.
-    try {
-        window.dispatchEvent(new CustomEvent(BRX_COMMON_READY_EVENT, { detail: { version: VERSION } }));
-    } catch {
-        /* CustomEvent unsupported — consumers fall back to the sync existence check */
-    }
+    // ── Readiness (load-order-safe AND wrapper-safe) ─────────────────────────
+    // "Ready" means the preview wrapper exists, so a consumer's create()/register()
+    // in an onReady callback (or ready-event handler) always finds a dock. The
+    // wrapper usually doesn't exist at script-eval time (builder still booting), so
+    // both the onReady drain and the brx-common:ready event are deferred to the
+    // moment the wrapper appears — NOT fired at install.
+    const runReady = (cb: BrxReadyCallback): void => {
+        try { cb(api); } catch (e) { console.error('[brx-common] onReady callback failed', e); }
+    };
+    let ready = false;
+    const pendingReady: BrxReadyCallback[] = [];
+    const scheduleReady = (cb: BrxReadyCallback): void => {
+        if (ready) runReady(cb); else pendingReady.push(cb);
+    };
+    const fireReady = (): void => {
+        if (ready) return;
+        ready = true;
+        // Drain queued onReady callbacks (pushed before the wrapper was ready)…
+        pendingReady.splice(0).forEach(runReady);
+        // …then dispatch the DOM event for addEventListener-based consumers.
+        try {
+            window.dispatchEvent(new CustomEvent(BRX_COMMON_READY_EVENT, { detail: { version: VERSION } }));
+        } catch {
+            /* CustomEvent unsupported — consumers fall back to the sync existence check */
+        }
+    };
+
+    // Load-order-safe queue: consumers can push to `window.BRX_Common.onReady`
+    // BEFORE this script loads (the idempotent guard only checks `.panels`, so a
+    // pre-seeded queue never blocks the real registry). Route queued + future
+    // pushes through scheduleReady so they run once the wrapper is ready, in order.
+    const bc = window.BRX_Common as { onReady?: BrxReadyCallback[] | { push(cb: BrxReadyCallback): void } };
+    const queued: BrxReadyCallback[] = Array.isArray(bc.onReady) ? bc.onReady.slice() : [];
+    bc.onReady = { push: (cb: BrxReadyCallback): void => scheduleReady(cb) };
+    queued.forEach(scheduleReady);
 
     // ── Bootstrap ───────────────────────────────────────────────────────────
     // The preview/wrapper may not exist yet at script-eval time (builder booting).
     if (getWrapper()) {
         ensureStylesheet();
+        fireReady();
     } else if (typeof MutationObserver !== 'undefined') {
         const boot = new MutationObserver(() => {
             if (getWrapper()) {
                 boot.disconnect();
                 ensureStylesheet();
+                fireReady();
             }
         });
         boot.observe(document.documentElement, { childList: true, subtree: true });
+    } else {
+        // No MutationObserver (very old host) — don't strand consumers; fire now.
+        fireReady();
     }
 })();

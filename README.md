@@ -327,23 +327,48 @@ window.BRX_Common.panels.on('remove', ({ id }) => console.log('panel removed:', 
 // off();  // unsubscribe
 ```
 
-### Readiness — `brx-common:ready` (load‑order‑safe, v0.17.0+)
+### Readiness — load‑order‑safe
 
-You can't subscribe to `window.BRX_Common.panels.on(...)` before the registry exists, so
-readiness is a **DOM event on `window`**, not a registry method. The registry that actually
-installs dispatches `brx-common:ready` (`detail: { version }`) exactly once. Use it when your
-code may evaluate **before** the registry script (deferred / async / optimised loading):
+You can't subscribe to `window.BRX_Common.panels.on(...)` before the registry exists, and a
+one‑shot DOM event only reaches listeners attached **before it fires** — so a consumer that
+loads *after* the registry would miss it. There are two order‑independent ways to wait for the
+registry, both safe whether your code runs before or after it loads.
+
+#### `onReady` command queue (v0.18.0+, recommended)
+
+Push a callback to `window.BRX_Common.onReady` and it runs once the registry is installed —
+**no matter the load order**. Callbacks queued before install drain on install; callbacks
+pushed after install fire immediately. Same shape as `gtag`'s `dataLayer.push` or jQuery's
+`$(fn)`. The callback receives the live `panels` API:
+
+```js
+(window.BRX_Common = window.BRX_Common || {}).onReady ||= [];
+window.BRX_Common.onReady.push((panels) => {
+    panels.on('add', (p) => console.log('added', p.id));
+    panels.create({ id: 'my-panel', title: 'My Panel', body: '<p>Hi</p>' });
+});
+```
+
+This works because the idempotent bootstrap guard only checks `.panels` — a pre‑seeded
+`onReady` array never blocks the real registry from installing.
+
+#### `brx-common:ready` event + sync check (v0.17.0+)
+
+The registry that installs also dispatches `brx-common:ready` (`detail: { version }`) on
+`window`, exactly once. Because a one‑shot event can't be caught by a late listener, **always
+pair it with the synchronous existence check**:
 
 ```js
 function init() {
     window.BRX_Common.panels.on('add', (p) => console.log('added', p.id));
-    window.BRX_Common.panels.on('remove', ({ id }) => console.log('removed', id));
 }
 if (window.BRX_Common?.panels) init();                                  // registry loaded first
 else window.addEventListener('brx-common:ready', init, { once: true }); // it loads later
 ```
 
 The synchronous check covers "registry loaded first"; the event covers "registry loads later".
+Prefer the `onReady` queue — it folds both branches into one `push()` so the pairing can't be
+forgotten.
 
 ---
 
