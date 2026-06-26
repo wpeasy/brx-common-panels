@@ -23,7 +23,7 @@
   (function bootstrap() {
     if (typeof window === "undefined" || typeof document === "undefined") return;
     if (window.BRX_Common && window.BRX_Common.panels) return;
-    const VERSION = "0.18.1";
+    const VERSION = "0.19.0";
     const PREVIEW_ID = "bricks-preview";
     const WRAPPER_ID = "bricks-builder-iframe-wrapper";
     const HOST_CLASS = "brx-common-host";
@@ -913,6 +913,7 @@
       else host.appendChild(content);
     }
     function create(opts) {
+      var _a;
       const o = opts || {};
       ensureStylesheet();
       const el = document.createElement("div");
@@ -933,7 +934,8 @@
         header.appendChild(title);
       }
       let closeBtn = null;
-      if (typeof o.onClose === "function") {
+      const showClose = (_a = o.closable) != null ? _a : typeof o.onClose === "function";
+      if (showClose) {
         closeBtn = document.createElement("button");
         closeBtn.className = PANEL_CLOSE_CLASS;
         closeBtn.type = "button";
@@ -956,13 +958,18 @@
       const handle = register(el, o);
       wireHeaderDrag(header, el);
       if (closeBtn) {
+        const closeMode = o.closeMode === "destroy" ? "destroy" : "hide";
         closeBtn.addEventListener("click", () => {
-          var _a;
+          var _a2;
           try {
-            (_a = o.onClose) == null ? void 0 : _a.call(o);
+            (_a2 = o.onClose) == null ? void 0 : _a2.call(o);
           } finally {
-            handle == null ? void 0 : handle.unregister();
-            el.remove();
+            if (closeMode === "destroy") {
+              handle == null ? void 0 : handle.unregister();
+              el.remove();
+            } else {
+              handle == null ? void 0 : handle.setHidden(true);
+            }
           }
         });
       }

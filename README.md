@@ -26,6 +26,7 @@ namespace. Two plugins that both want a strip by the canvas now simply cooperate
 - [How it works](#how-it-works)
 - [Install](#install)
 - [Quick start](#quick-start)
+  - [Full example: a load-order-safe content panel](#full-example-a-load-order-safe-content-panel)
 - [Concepts](#concepts)
 - [API reference](#api-reference)
   - [`panels.create(options)`](#panelscreateoptions--templated-panel)
@@ -132,7 +133,8 @@ const { handle, header, body, footer } = window.BRX_Common.panels.create({
     body: '<p>Hello</p>',    // HTML string or a DOM node
     footer: 'Ready',         // optional footer (omit for none)
     defaultHeight: 280,
-    onClose: () => myCleanup() // optional → adds a ✕ that runs cleanup + removes the panel
+    closable: true,            // optional → adds a ✕ (hides + persists by default; see closeMode)
+    onClose: () => myCleanup() // optional → cleanup/logging hook; the registry does the hide/destroy
 });
 
 // `header`, `body`, `footer` are live containers — populate them any time:
@@ -170,15 +172,85 @@ Open a page in the Bricks builder, then paste this into the **main‑window** de
 drag the divider between them to resize, and click ✕ to close:
 
 ```js
-BRX_Common.panels.create({ id:'demo-1', position:'top', title:'Panel One', body:'<p>Drag my header · resize the divider · ✕ to close</p>', footer:'footer one', onClose:()=>console.log('closed demo-1') });
-BRX_Common.panels.create({ id:'demo-2', position:'top', title:'Panel Two', body:'<p>Two panels share the top dock — drag the divider between us.</p>', onClose:()=>console.log('closed demo-2') });
-BRX_Common.panels.create({ id:'demo-3', position:'bottom', title:'Panel Three', body:'<p>I am in the bottom dock. Drag my header up to join the others.</p>', onClose:()=>console.log('closed demo-3') });
+BRX_Common.panels.create({ id:'demo-1', position:'top', title:'Panel One', body:'<p>Drag my header · resize the divider · ✕ to close</p>', footer:'footer one', closable:true, closeMode:'destroy', onClose:()=>console.log('closed demo-1') });
+BRX_Common.panels.create({ id:'demo-2', position:'top', title:'Panel Two', body:'<p>Two panels share the top dock — drag the divider between us.</p>', closable:true, closeMode:'destroy', onClose:()=>console.log('closed demo-2') });
+BRX_Common.panels.create({ id:'demo-3', position:'bottom', title:'Panel Three', body:'<p>I am in the bottom dock. Drag my header up to join the others.</p>', closable:true, closeMode:'destroy', onClose:()=>console.log('closed demo-3') });
 
 // Remove them again:
 // ['demo-1','demo-2','demo-3'].forEach(id => BRX_Common.panels.unregister(id));
 ```
 
 (Each `create()` is on one line so the body strings don't break when pasted.)
+
+### Full example: a load-order-safe content panel
+
+A complete, paste‑ready panel — an "Easy Links" card with a header icon, a table body,
+and a footer. It uses the **`onReady` queue** (see [Readiness](#readiness--load-order-safe))
+so it works no matter when it loads relative to the registry, and the default close behaviour
+(`closeMode: 'hide'`) so the ✕ **hides + persists** (re‑show from the host's panel
+manager) rather than destroying the panel. Drop it in a snippet manager that runs in the
+Bricks builder, or wrap it in `<script>…</script>`.
+
+> **Keep the JS source ASCII.** Some snippet managers mangle multi‑byte characters
+> (emoji, `—`, `→`) when they store/serve the code inline, which surfaces as
+> `Uncaught SyntaxError: Invalid or unexpected token`. Put glyphs in the HTML strings as
+> entities (e.g. `&#128279;` 🔗) and keep comments to plain ASCII (`-`, `->`).
+
+```js
+/* Easy Links - a load-order-safe content panel for brx-common-panels. */
+(function () {
+    // onReady runs the callback once the registry is ready, whether this code
+    // evaluates before OR after brx-common-panels loads.
+    (window.BRX_Common = window.BRX_Common || {}).onReady = window.BRX_Common.onReady || [];
+
+    window.BRX_Common.onReady.push(function (panels) {
+        if (panels.list().some(function (p) { return p.id === 'easy-links'; })) return;
+
+        // Header: HTML with an icon (entity keeps the JS source ASCII) + a title.
+        var header =
+            '<span style="margin-right:6px" aria-hidden="true">&#128279;</span>' +
+            '<span>Easy Links</span>';
+
+        // Body: a small table of links.
+        var links = [
+            { label: 'Help',          url: 'https://example.com/help',      icon: '&#10068;'  },
+            { label: 'Documentation', url: 'https://example.com/docs',      icon: '&#128216;' },
+            { label: 'Resources',     url: 'https://example.com/resources', icon: '&#128230;' }
+        ];
+
+        var rows = links.map(function (l) {
+            return '<tr><td class="el__i">' + l.icon + '</td>' +
+                '<td><a href="' + l.url + '" target="_blank" rel="noopener noreferrer">' + l.label + '</a></td></tr>';
+        }).join('');
+
+        var body =
+            '<table class="el"><tbody>' + rows + '</tbody></table>' +
+            '<style>' +
+                '.el{width:100%;border-collapse:collapse;font-size:13px}' +
+                '.el td{padding:6px 8px;border-bottom:1px solid var(--builder-border,#3a3a3a)}' +
+                '.el__i{width:1.5em;text-align:center;opacity:.8}' +
+                '.el a{color:var(--builder-color-accent,#4ea1ff);text-decoration:none}' +
+                '.el a:hover{text-decoration:underline}' +
+            '</style>';
+
+        panels.create({
+            id: 'easy-links',          // stable id -> layout + hidden state persist
+            position: 'bottom',        // bottom | top | left | right
+            header: header,
+            body: body,
+            footer: 'Sample panel',
+            defaultHeight: 200,
+            closable: true,            // X in the header; hides + persists (closeMode defaults to 'hide')
+            onClose: function () { console.log('[Easy Links] closed'); } // cleanup/logging hook only
+        });
+    });
+})();
+```
+
+Click the ✕ and reload: the panel stays hidden (the registry persisted `hidden: true`
+for `easy-links`). Re‑show it from your host's panel manager, or programmatically with
+`BRX_Common.panels.setHidden('easy-links', false)`. Want the ✕ to *remove* the panel
+instead, leaving it gone until your code re‑`create()`s it? Pass `closeMode: 'destroy'`.
 
 ---
 
@@ -243,7 +315,9 @@ create(options?: PanelTemplateOptions): {
 | `footer` | `string \| Node` | – | Optional footer content. Omit for no footer; pass `''` for an empty footer to populate later. |
 | `className` | `string` | – | Extra class(es) on the panel root. |
 | `flushBody` | `boolean` | `false` | Remove the body's padding so content (e.g. an editor) fills edge‑to‑edge. |
-| `onClose` | `() => void` | – | When set, adds a ✕ to the header that runs this callback, then unregisters + removes the panel. |
+| `closable` | `boolean` | `true` if `onClose` set, else `false` | Show a ✕ in the header. Set explicitly to add a close button without an `onClose` hook. |
+| `closeMode` | `'hide' \| 'destroy'` | `'hide'` | What the ✕ does — **the registry owns this**. `'hide'` → `setHidden(true)`: the panel stays registered and its hidden state **persists** across reloads (re‑show from the host's panel manager). `'destroy'` → `unregister()` + remove the element (gone until you re‑`create()` it). |
+| `onClose` | `() => void` | – | Side‑effect hook (cleanup / logging) fired when the ✕ is clicked, **before** the registry acts. It does **not** implement hide/destroy or persistence — the registry does. Providing it defaults `closable` to true. |
 
 ### `panels.register(el, options)` → raw element
 
@@ -313,7 +387,7 @@ unsubscribe function), plus a separate **load‑order‑safe readiness** DOM eve
 | Event | Callback | Fires when |
 |---|---|---|
 | `'add'` | `(panel: PanelInfo) => void` | a panel is registered (**v0.17.0+**) |
-| `'remove'` | `(info: { id: string }) => void` | a panel is removed — `unregister()` or a ✕ close (**v0.17.0+**) |
+| `'remove'` | `(info: { id: string }) => void` | a panel is removed — `unregister()` or a ✕ with `closeMode:'destroy'` (a default `'hide'` ✕ fires `'change'`, not `'remove'`) (**v0.17.0+**) |
 | `'change'` | `(panels: PanelInfo[]) => void` | any layout change — add / remove / move / resize / collapse / hide (full snapshot) |
 
 Use `add` / `remove` for lifecycle; use `change` (and diff the snapshot) when you need
@@ -327,7 +401,7 @@ window.BRX_Common.panels.on('remove', ({ id }) => console.log('panel removed:', 
 // off();  // unsubscribe
 ```
 
-### Readiness — load‑order‑safe
+### Readiness — load-order-safe
 
 You can't subscribe to `window.BRX_Common.panels.on(...)` before the registry exists, and a
 one‑shot DOM event only reaches listeners attached **before it fires** — so a consumer that

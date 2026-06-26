@@ -113,9 +113,26 @@ export interface PanelTemplateOptions extends RegisterOptions {
     /** Remove the body's default padding so content (e.g. an editor) fills edge-to-edge. */
     flushBody?: boolean;
     /**
-     * When provided, a ✕ button is added to the top-right of the header. Clicking
-     * it runs this callback (for the consumer's cleanup) and then unregisters +
-     * removes the panel. Omit for a panel with no close affordance.
+     * Show a ✕ button in the top-right of the header. Defaults to true when
+     * `onClose` is provided (back-compat), false otherwise. Set explicitly to add a
+     * close button WITHOUT an onClose hook (the registry still handles the action).
+     */
+    closable?: boolean;
+    /**
+     * What the ✕ does — the REGISTRY owns this, not the consumer:
+     *  - `'hide'` (default): `setHidden(true)` — the panel stays registered and its
+     *    hidden state persists across reloads; re-show it from the host's panel
+     *    manager. This is the point-of-truth model.
+     *  - `'destroy'`: `unregister()` + remove the element from the DOM (the panel is
+     *    gone until the consumer re-creates it). Use when the panel's existence is
+     *    gated by the consumer's own state.
+     */
+    closeMode?: 'hide' | 'destroy';
+    /**
+     * Side-effect hook fired when the user clicks the ✕ — for cleanup / logging
+     * ONLY. The registry performs the hide/destroy + persistence itself; this
+     * callback does NOT need to (and should not) implement either. Runs before the
+     * registry action. Providing it also defaults `closable` to true.
      */
     onClose?: () => void;
 }
@@ -217,7 +234,7 @@ declare global {
     // if present. Plugins bundling this copy cooperate until Bricks ships it.
     if (window.BRX_Common && window.BRX_Common.panels) return;
 
-    const VERSION = '0.18.1';
+    const VERSION = '0.19.0';
     const PREVIEW_ID = 'bricks-preview';
     const WRAPPER_ID = 'bricks-builder-iframe-wrapper';
     const HOST_CLASS = 'brx-common-host';
@@ -1353,7 +1370,8 @@ declare global {
 
         // Optional close (✕) button — top-right of the header.
         let closeBtn: HTMLButtonElement | null = null;
-        if (typeof o.onClose === 'function') {
+        const showClose = o.closable ?? typeof o.onClose === 'function';
+        if (showClose) {
             closeBtn = document.createElement('button');
             closeBtn.className = PANEL_CLOSE_CLASS;
             closeBtn.type = 'button';
@@ -1384,14 +1402,21 @@ declare global {
         wireHeaderDrag(header, el);
 
         if (closeBtn) {
+            const closeMode = o.closeMode === 'destroy' ? 'destroy' : 'hide';
             closeBtn.addEventListener('click', () => {
-                // Consumer cleanup first, then drop the panel (free the dock slot)
-                // and remove the element from the DOM entirely.
+                // The registry owns the action + persistence. The onClose hook is a
+                // side-effect (cleanup/logging) only — run it first, then act.
                 try {
                     o.onClose?.();
                 } finally {
-                    handle?.unregister();
-                    el.remove();
+                    if (closeMode === 'destroy') {
+                        handle?.unregister();
+                        el.remove();
+                    } else {
+                        // 'hide' (default): persist hidden; panel stays registered so
+                        // the host's panel manager can re-show it. Survives reload.
+                        handle?.setHidden(true);
+                    }
                 }
             });
         }
