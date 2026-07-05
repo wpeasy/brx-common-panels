@@ -234,7 +234,7 @@ declare global {
     // if present. Plugins bundling this copy cooperate until Bricks ships it.
     if (window.BRX_Common && window.BRX_Common.panels) return;
 
-    const VERSION = '0.19.0';
+    const VERSION = '0.19.1';
     const PREVIEW_ID = 'bricks-preview';
     const WRAPPER_ID = 'bricks-builder-iframe-wrapper';
     const HOST_CLASS = 'brx-common-host';
@@ -344,7 +344,17 @@ declare global {
             // left/right docks flank the center (column 1/3 of row 2); the iframe wrapper
             // sits in the center cell. Empty side columns collapse to 0 width, so a
             // top/bottom-only layout behaves exactly like the previous flex column.
-            '#' + PREVIEW_ID + ',.' + HOST_CLASS + '{display:grid !important;grid-template-columns:auto minmax(0,1fr) auto;grid-template-rows:auto minmax(0,1fr) auto;}',
+            //
+            // :not(.canvas-preview-active) — Bricks' own Style Manager "Preview" toggle
+            // adds this class to #bricks-preview and teleports #bricks-builder-iframe-
+            // wrapper via an inline (non-important) fixed-position/height/scale style
+            // into the Style Manager popup's preview column. Our grid + height:auto
+            // !important rules would otherwise stomp that inline height unconditionally,
+            // collapsing the Style Manager preview to near-zero height. Excluding this
+            // state means we simply don't touch layout while Bricks owns it there; normal
+            // main-canvas docking is unaffected since that class is absent outside the
+            // Style Manager popup.
+            '#' + PREVIEW_ID + ':not(.canvas-preview-active),.' + HOST_CLASS + ':not(.canvas-preview-active){display:grid !important;grid-template-columns:auto minmax(0,1fr) auto;grid-template-rows:auto minmax(0,1fr) auto;}',
             // width/margin are deliberately NON-important: Bricks sets the responsive
             // canvas width as an INLINE style (e.g. 768px), which overrides width:100%;
             // on RESET (inline width removed) width:100% fills the center cell again.
@@ -354,7 +364,7 @@ declare global {
             // inline responsive width (or Bricks' full-canvas inline width) can't spill
             // it over the left/right docks. width:100% (non-important) fills the cell on
             // reset; margin-inline:auto centres an explicit (smaller) responsive width.
-            '#' + WRAPPER_ID + '{grid-column:2;grid-row:2;height:auto !important;min-height:0 !important;min-width:0 !important;max-width:100% !important;width:100%;margin-inline:auto;}',
+            '#' + PREVIEW_ID + ':not(.canvas-preview-active) #' + WRAPPER_ID + ',.' + HOST_CLASS + ':not(.canvas-preview-active) #' + WRAPPER_ID + '{grid-column:2;grid-row:2;height:auto !important;min-height:0 !important;min-width:0 !important;max-width:100% !important;width:100%;margin-inline:auto;}',
             // Dock placement by edge.
             '.' + DOCK_CLASS + '[data-position="top"]{grid-column:1 / -1;grid-row:1;}',
             '.' + DOCK_CLASS + '[data-position="bottom"]{grid-column:1 / -1;grid-row:3;}',
