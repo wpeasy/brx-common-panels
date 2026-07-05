@@ -1,0 +1,109 @@
+# Changelog
+
+All notable changes to `brx-common-panels` (the shared, collision-free dock manager for Bricks Builder add-ons — `window.BRX_Common.panels`) will be documented in this file.
+
+This package lives in-tree at `packages/brx-common-panels/` inside the `ab-bricks-productivity` plugin repo, which is its source of truth. It's automatically mirrored to its own public repo, [wpeasy/brx-common-panels](https://github.com/wpeasy/brx-common-panels), by a GitHub Action on every push to `main` that touches this folder — the mirror publishes whatever is committed here under the version tag in `package.json`, so **every entry below corresponds to a real published tag** on the standalone repo.
+
+## [Unreleased]
+
+---
+
+## [0.19.1] - 2026-07-05
+
+### Fixed
+- Bricks Builder's own Style Manager "Preview" toggle (which teleports the SAME preview iframe into the Style Manager popup via an inline fixed-position/height/scale style, marked by a `canvas-preview-active` class on `#bricks-preview`) was having its layout stomped by this registry's `!important` grid + `height:auto` rules — collapsing the Style Manager preview to a near-zero height. Both the grid-display rule and the wrapper height/width rule are now scoped with `:not(.canvas-preview-active)`, a pure-CSS ancestor guard using the exact class Bricks itself already toggles. No JS/observer changes needed — normal main-canvas docking is unaffected.
+
+---
+
+## [0.19.0] - 2026-06-26
+
+### Added
+- The registry now owns panel close (hide/show + persistence) instead of leaving it to the consumer. `create()` gains `closable?: boolean` (shows the ✕; defaults to `true` when `onClose` is set) and `closeMode?: 'hide' | 'destroy'` (default `'hide'`). A `'hide'` ✕ calls `setHidden(true)` — the panel stays registered and its hidden state persists across reloads; `'destroy'` is the old `unregister()` + remove.
+
+### Changed
+- `onClose` is now a side-effect hook (cleanup/logging) only — it runs before the registry acts and must not implement its own persistence.
+
+**Breaking-ish:** an `onClose`-only panel that previously expected the ✕ to destroy the panel now hides it instead — pass `closeMode:'destroy'` explicitly for the old behaviour.
+
+---
+
+## [0.18.1] - 2026-06-26
+
+### Fixed
+- "Ready" now correctly means the DOM wrapper actually exists. `register()` was silently no-opping (returning `null`) when `#bricks-builder-iframe-wrapper` / `#bricks-preview` weren't in the DOM yet at script-eval time, and both the `onReady` queue drain and the `brx-common:ready` event fired at install regardless — so a consumer's `create()`/`register()` inside an `onReady` callback could silently fail with an empty `list()` and no error. Both are now deferred until the wrapper actually appears (via the same boot `MutationObserver` that injects the stylesheet), guaranteeing a dock exists to attach to.
+
+---
+
+## [0.18.0] - 2026-06-26
+
+### Added
+- A load-order-safe `onReady` command queue on `window.BRX_Common`: `(window.BRX_Common = window.BRX_Common || {}).onReady ||= []; window.BRX_Common.onReady.push((panels) => { ... })`. The callback runs with the live `panels` API whether pushed before the registry loads (a pre-seeded queue doesn't block install; queued callbacks drain when ready) or after (routed through the same ready-gate). Folds the previous event+sync-check pair into one idiom — the preferred pattern for new consumers going forward. The `brx-common:ready` event stays for back-compat.
+
+---
+
+## [0.17.0] - 2026-06-25
+
+### Added
+- Granular lifecycle events: `panels.on('add', cb)` (new `PanelInfo`) and `panels.on('remove', cb)` (`{ id }`), alongside the existing coarse `on('change', cb)` full-snapshot event.
+- `brx-common:ready` — a `window` DOM event (`detail: { version }`) dispatched once on install, since a consumer can't subscribe to `panels.on()` before the registry exists yet. Load-order-safe pattern: `if (window.BRX_Common?.panels) init(); else window.addEventListener(BRX_COMMON_READY_EVENT, init, { once: true });` (`BRX_COMMON_READY_EVENT` exported from the types).
+
+---
+
+## [0.16.0] - 2026-06-24
+
+### Added
+- Four-way docking: docks can now also be enabled on the **left** and **right** edges (previously top/bottom only), flanking the iframe as vertical side docks (single column, vertical resize) via a 3×3 CSS grid host (was a flex column).
+- `panels.setHidden(idOrEl, hidden)` / `isHidden(idOrEl)` — display-only show/hide, independent of collapse state, and persisted across reloads.
+- `panels.setEnabledPositions(positions)` — lets the host gate which edges exist at all, relocating any panels docked to a disabled edge.
+- Per-panel `allowedPositions` on `register`/`create` — a panel can constrain which edges it accepts (intersected with the host's enabled positions).
+- `list()` now also returns `hidden` and `title` per panel.
+
+---
+
+## [0.14.0] - 2026-06-24
+
+### Added
+- Empty docks now keep their accent chrome bar visible (as a drag target) as long as any panel exists elsewhere in the layout — previously an empty dock's bar disappeared entirely, making it impossible to drag a panel back into it.
+
+### Changed
+- Dock chrome bar thickened from 8px to 10px for an easier drag/click target.
+
+### Fixed
+- Bricks' preview width-reset regression: as a flex item, the iframe wrapper was shrink-wrapping to the iframe's ~320px min-content size on a responsive-width reset. Fixed with `align-self:stretch` (full width when width is `auto`) + `margin-inline:auto` (so an explicit responsive width still centers correctly).
+
+---
+
+## [0.13.0] - 2026-06-23
+
+Version-sync only — no functional change (a package.json version correction to match the already-published tag).
+
+---
+
+## [0.12.0] - 2026-06-23
+
+### Added
+- Whole-header drag: the entire panel header is now the drag handle (the small grip icon is just a visual cue, not the only draggable area). A drag only begins past a 4px movement threshold, so a plain click on the header (or one of its interactive controls) still registers as a click, not an accidental drag.
+- Panel body scrollbars now match the Bricks builder UI look (thin, accent-colored thumb on a `bg-3` track, 8px) via the `--builder-*` CSS variables, instead of the browser's default scrollbar styling.
+- README gained a copy-paste console snippet so integrating developers can drop in demo panels and try drag/resize/close immediately without writing any code.
+
+---
+
+## [0.11.0] - 2026-06-23
+
+### Changed
+- `onCollapseChange` moved from a single slot on the dock to being stored per-panel on the registry entry. Every panel sharing a dock is now notified on collapse/expand (not just one), and the callback correctly travels with a panel across a cross-dock drag-and-drop move.
+
+---
+
+## [0.10.0] - 2026-06-23
+
+### Added
+- Comprehensive public-facing README (why/how, install, full API reference, persistence model, theming, CSS class reference, multi-plugin cooperation model, known limitations) and a GPL-2.0 `LICENSE`, in preparation for the package's own public repo.
+
+---
+
+## [0.1.0] - 2026-06-23
+
+### Added
+- Initial release: a standalone, dependency-free dock/registry engine (`window.BRX_Common.panels`) replacing the old bespoke "shrink the iframe's inline height" approach that collided with Bricks' own inline-height writes and with other plugins doing the same thing.
+- Flex-column layout via one injected `!important` stylesheet (beats Bricks' inline wrapper height with no observer arms-race). Top/bottom dock containers, container-owned drag-resize, panels fill their dock, layout persisted to `localStorage` keyed by panel id, idempotent bootstrap (safe if multiple plugins load the same script).
