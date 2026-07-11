@@ -8,6 +8,14 @@ This package lives in-tree at `packages/brx-common-panels/` inside the `ab-brick
 
 ---
 
+## [0.20.0] - 2026-07-11
+
+### Fixed
+- Bricks Builder's own scale-to-fit (`transform: scale(h)` on `#bricks-builder-iframe-wrapper`, applied when the active breakpoint/preview width doesn't fit the available space) was double-shrinking the canvas whenever a dock was present, leaving whitespace to the right/bottom of the preview. Root cause: Bricks computes `width`/`height`/`transform` as one self-consistent set, sized against `$_state.previewWrapperWidth`/`previewWrapperHeight` — but those are measured off `#bricks-preview`'s own (dock-unaware) box, so this registry's `!important` grid sizing was re-clipping a box Bricks had already sized for a *different* (too-generous) budget, then Bricks' stale `transform` shrank what was left a second time.
+- Fixed by feeding Bricks the true, dock-aware `previewWrapperWidth`/`previewWrapperHeight` (outer box minus live dock width/height) whenever dock layout changes, so Bricks' own scale math is correct for the real space — and by standing the registry's own `width`/`height`/`max-width` override down (via a `data-brx-scaled` attribute) exactly while Bricks is actively scaling, so its now-correct output renders unmodified. Native scale-to-fit (including a user's manually-set scale %) keeps working in every case, docked or not.
+
+---
+
 ## [0.19.1] - 2026-07-05
 
 ### Fixed

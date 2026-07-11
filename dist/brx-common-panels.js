@@ -23,7 +23,7 @@
   (function bootstrap() {
     if (typeof window === "undefined" || typeof document === "undefined") return;
     if (window.BRX_Common && window.BRX_Common.panels) return;
-    const VERSION = "0.19.1";
+    const VERSION = "0.20.0";
     const PREVIEW_ID = "bricks-preview";
     const WRAPPER_ID = "bricks-builder-iframe-wrapper";
     const HOST_CLASS = "brx-common-host";
@@ -47,6 +47,7 @@
     const DRAG_ACTIVE_CLASS = "brx-common-drag-active";
     const STYLE_ID = "brx-common-panels-style";
     const LS_KEY = "brx-common-panels";
+    const SCALED_ATTR = "data-brx-scaled";
     const DEFAULT_HEIGHT = 300;
     const DEFAULT_MIN = 80;
     const MAX_PER_ROW = 3;
@@ -81,6 +82,68 @@
       const preview = getPreview();
       if (preview) preview.classList.add(HOST_CLASS);
     }
+    function getBricksGlobalProps() {
+      var _a, _b, _c;
+      const brxBody = document.querySelector(".brx-body");
+      return (_c = (_b = (_a = brxBody == null ? void 0 : brxBody.__vue_app__) == null ? void 0 : _a.config) == null ? void 0 : _b.globalProperties) != null ? _c : null;
+    }
+    function getBricksState() {
+      var _a;
+      const props = getBricksGlobalProps();
+      return (_a = props == null ? void 0 : props.$_state) != null ? _a : null;
+    }
+    function dockExtent(position) {
+      const d = docks.get(position);
+      if (!d) return 0;
+      return SIDE(position) ? d.el.offsetWidth : d.el.offsetHeight;
+    }
+    function isBricksScaling(state) {
+      if (!state.previewScaleActive) return false;
+      const wrapperWidth = Number(state.previewWrapperWidth) || 0;
+      if (wrapperWidth <= 0) return false;
+      const previewWidth = Number(state.previewWidth) || 0;
+      const scaleMaxRaw = Number(state.previewScaleMax);
+      const scaleMax = Number.isFinite(scaleMaxRaw) ? scaleMaxRaw : 1;
+      const h = Math.min(wrapperWidth / previewWidth, scaleMax);
+      return h !== 1;
+    }
+    function correctBricksPreviewMeasurements() {
+      var _a;
+      if ((_a = document.getElementById(PREVIEW_ID)) == null ? void 0 : _a.classList.contains("canvas-preview-active")) return;
+      const preview = getPreview();
+      const wrapper = getWrapper();
+      const state = getBricksState();
+      if (!preview || !wrapper || !state) return;
+      const width = Math.max(0, preview.offsetWidth - dockExtent("left") - dockExtent("right"));
+      const height = Math.max(0, preview.offsetHeight - dockExtent("top") - dockExtent("bottom"));
+      if (width > 0 && state.previewWrapperWidth !== width) state.previewWrapperWidth = width;
+      if (height > 0 && state.previewWrapperHeight !== height) state.previewWrapperHeight = height;
+      if (isBricksScaling(state)) wrapper.setAttribute(SCALED_ATTR, "true");
+      else wrapper.removeAttribute(SCALED_ATTR);
+    }
+    let correctionRaf = null;
+    function scheduleBricksPreviewCorrection() {
+      if (typeof requestAnimationFrame === "undefined") {
+        correctBricksPreviewMeasurements();
+        return;
+      }
+      if (correctionRaf != null) return;
+      correctionRaf = requestAnimationFrame(() => {
+        correctionRaf = null;
+        correctBricksPreviewMeasurements();
+      });
+    }
+    let previewResizeObserver = null;
+    function ensurePreviewResizeObserver() {
+      if (previewResizeObserver || typeof ResizeObserver === "undefined") return;
+      const preview = getPreview();
+      if (!preview) return;
+      previewResizeObserver = new ResizeObserver(() => {
+        setTimeout(correctBricksPreviewMeasurements, 0);
+        setTimeout(correctBricksPreviewMeasurements, 50);
+      });
+      previewResizeObserver.observe(preview);
+    }
     function ensureStylesheet() {
       ensureHost();
       if (document.getElementById(STYLE_ID)) return;
@@ -102,6 +165,9 @@
         // main-canvas docking is unaffected since that class is absent outside the
         // Style Manager popup.
         "#" + PREVIEW_ID + ":not(.canvas-preview-active),." + HOST_CLASS + ":not(.canvas-preview-active){display:grid !important;grid-template-columns:auto minmax(0,1fr) auto;grid-template-rows:auto minmax(0,1fr) auto;}",
+        // Grid placement + min-size reset apply ALWAYS (purely positional —
+        // harmless whether or not Bricks is scaling).
+        "#" + PREVIEW_ID + ":not(.canvas-preview-active) #" + WRAPPER_ID + ",." + HOST_CLASS + ":not(.canvas-preview-active) #" + WRAPPER_ID + "{grid-column:2;grid-row:2;min-height:0 !important;min-width:0 !important;}",
         // width/margin are deliberately NON-important: Bricks sets the responsive
         // canvas width as an INLINE style (e.g. 768px), which overrides width:100%;
         // on RESET (inline width removed) width:100% fills the center cell again.
@@ -111,7 +177,16 @@
         // inline responsive width (or Bricks' full-canvas inline width) can't spill
         // it over the left/right docks. width:100% (non-important) fills the cell on
         // reset; margin-inline:auto centres an explicit (smaller) responsive width.
-        "#" + PREVIEW_ID + ":not(.canvas-preview-active) #" + WRAPPER_ID + ",." + HOST_CLASS + ":not(.canvas-preview-active) #" + WRAPPER_ID + "{grid-column:2;grid-row:2;height:auto !important;min-height:0 !important;min-width:0 !important;max-width:100% !important;width:100%;margin-inline:auto;}",
+        //
+        // :not([data-brx-scaled]) — ONLY while Bricks ISN'T actively running its own
+        // transform:scale(h) compensation. Bricks computes width/height/transform/
+        // marginLeft as ONE self-consistent set sized to fit $_state.previewWrapperWidth/
+        // Height; correctBricksPreviewMeasurements() feeds it the TRUE (dock-aware) cell
+        // size, so when it IS scaling, its own output already fits the cell with no gap —
+        // forcing height:auto/width/max-width on top of that would re-clip a box Bricks
+        // already sized correctly and double-apply the shrink under its transform. So we
+        // step fully out of the way here and let Bricks own the box while it's scaling.
+        "#" + PREVIEW_ID + ":not(.canvas-preview-active) #" + WRAPPER_ID + ":not([" + SCALED_ATTR + '="true"]),.' + HOST_CLASS + ":not(.canvas-preview-active) #" + WRAPPER_ID + ":not([" + SCALED_ATTR + '="true"]){height:auto !important;max-width:100% !important;width:100%;margin-inline:auto;}',
         // Dock placement by edge.
         "." + DOCK_CLASS + '[data-position="top"]{grid-column:1 / -1;grid-row:1;}',
         "." + DOCK_CLASS + '[data-position="bottom"]{grid-column:1 / -1;grid-row:3;}',
@@ -200,6 +275,8 @@
         "." + PANEL_CLASS + " ::-webkit-scrollbar-thumb,." + PANEL_CLASS + "::-webkit-scrollbar-thumb{background-color:var(--builder-color-accent,#3b82f6);border-radius:3px;}"
       ].join("");
       (document.head || document.documentElement).appendChild(style);
+      ensurePreviewResizeObserver();
+      correctBricksPreviewMeasurements();
     }
     function loadLayout() {
       try {
@@ -631,6 +708,7 @@
     function setDockHeight(state, px) {
       state.height = clampHeight(state, px);
       if (!state.collapsed) applyRowHeights(state);
+      scheduleBricksPreviewCorrection();
     }
     function applyCollapsedDom(state) {
       if (state.collapsed) {
@@ -722,6 +800,7 @@
       docks.clear();
     }
     function emitChange() {
+      scheduleBricksPreviewCorrection();
       if (!listeners.size) return;
       const snapshot = list();
       listeners.forEach((cb) => {
