@@ -8,6 +8,13 @@ This package lives in-tree at `packages/brx-common-panels/` inside the `ab-brick
 
 ---
 
+## [0.20.1] - 2026-07-14
+
+### Fixed
+- The panel template's header/footer strip (`create()`'s header/footer slots) and the drag-ghost indicator were hardcoded to Bricks' fixed `--bricks-bg-dark`/`--bricks-color-light` brand tokens, so they stayed dark even when Bricks Builder itself was switched to Light mode. Swapped for `--builder-bg-2`/`--builder-color` — Bricks' own light/dark-reactive tokens (already used for the panel body background) — so the header now follows the builder's own mode toggle like the rest of the panel does.
+
+---
+
 ## [0.20.0] - 2026-07-11
 
 ### Fixed

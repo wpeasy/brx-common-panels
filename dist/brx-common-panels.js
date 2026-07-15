@@ -237,7 +237,11 @@
         // ── Panel template (create()) — consistent header+body, Bricks builder colours, tight padding ──
         "." + PANEL_CLASS + "{display:flex;flex-direction:column;height:100%;min-height:0;background:var(--builder-bg,#1e1e1e);color:var(--builder-color,#e0e0e0);font-family:inherit;font-size:12px;box-sizing:border-box;}",
         "." + PANEL_CLASS + " *{box-sizing:border-box;}",
-        "." + PANEL_HEADER_CLASS + ",." + PANEL_FOOTER_CLASS + "{flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:3px 8px;min-height:24px;background:var(--bricks-bg-dark,#18191d);color:var(--bricks-color-light,#e6e9ee);}",
+        // Header/footer use --builder-bg-2/--builder-color (Bricks' own light/dark-
+        // mode-reactive tokens, redefined under [data-builder-mode=light]) rather than
+        // the fixed --bricks-bg-dark brand token, so the strip follows Bricks Builder's
+        // own light/dark toggle instead of staying permanently dark.
+        "." + PANEL_HEADER_CLASS + ",." + PANEL_FOOTER_CLASS + "{flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:3px 8px;min-height:24px;background:var(--builder-bg-2,#18191d);color:var(--builder-color,#e6e9ee);}",
         // The whole header is a drag handle → grab cursor (interactive children keep theirs).
         "." + PANEL_HEADER_CLASS + "{border-bottom:1px solid var(--builder-border,#2f3136);cursor:grab;}",
         "." + PANEL_HEADER_CLASS + " button,." + PANEL_HEADER_CLASS + " a,." + PANEL_HEADER_CLASS + " input,." + PANEL_HEADER_CLASS + " select,." + PANEL_HEADER_CLASS + " textarea{cursor:auto;}",
@@ -260,7 +264,7 @@
         "." + DRAG_ACTIVE_CLASS + " #" + WRAPPER_ID + "{pointer-events:none !important;}",
         "." + PLACEHOLDER_CLASS + "{flex:1 1 0;min-width:" + PANEL_MIN_WIDTH + "px;align-self:stretch;box-sizing:border-box;border:2px dashed var(--builder-color-accent,#3b82f6);background:rgba(59,130,246,.10);border-radius:2px;pointer-events:none;}",
         // Ghost that follows the cursor.
-        "." + GHOST_CLASS + "{position:fixed;left:0;top:0;z-index:2147483646;pointer-events:none;white-space:nowrap;padding:4px 10px;border-radius:3px;font:600 12px/1 system-ui,sans-serif;background:var(--bricks-bg-dark,#18191d);color:var(--bricks-color-light,#e6e9ee);border:1px solid var(--builder-color-accent,#3b82f6);box-shadow:0 6px 18px rgba(0,0,0,.45);opacity:.92;}",
+        "." + GHOST_CLASS + "{position:fixed;left:0;top:0;z-index:2147483646;pointer-events:none;white-space:nowrap;padding:4px 10px;border-radius:3px;font:600 12px/1 system-ui,sans-serif;background:var(--builder-bg-2,#18191d);color:var(--builder-color,#e6e9ee);border:1px solid var(--builder-color-accent,#3b82f6);box-shadow:0 6px 18px rgba(0,0,0,.45);opacity:.92;}",
         // Close (✕) button — pushed to the top-right of the header.
         "." + PANEL_CLOSE_CLASS + "{margin-left:auto;flex:0 0 auto;display:flex;align-items:center;justify-content:center;width:18px;height:18px;padding:0;border:0;background:transparent;color:inherit;cursor:pointer;font:600 12px/1 system-ui,sans-serif;opacity:.7;}",
         "." + PANEL_CLOSE_CLASS + ":hover{opacity:1;}",

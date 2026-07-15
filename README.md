@@ -485,8 +485,8 @@ the editor's theme automatically:
 | `--builder-color` | Panel text |
 | `--builder-border` | Borders / dividers |
 | `--builder-color-accent` | Drag bar, dividers (hover), drop indicators |
-| `--bricks-bg-dark` | Header / footer strip background |
-| `--bricks-color-light` | Header / footer text, bar chevron-area |
+| `--builder-bg-2` | Header / footer strip background, drag-ghost background |
+| `--builder-color` | Header / footer text, drag-ghost text |
 
 Every class is prefixed `brx-common-` so you can target or override anything from your own
 stylesheet. The body padding can be removed per‑panel with `flushBody: true` (e.g. for a
