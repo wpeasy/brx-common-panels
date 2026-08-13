@@ -8,6 +8,13 @@ This package lives in-tree at `packages/brx-common-panels/` inside the `ab-brick
 
 ---
 
+## [0.20.2] - 2026-07-21
+
+### Changed
+- The dock chrome bar (the collapse/resize strip on a dock's iframe-facing edge) now highlights to Bricks' own accent colour (`var(--builder-color-accent)`) on hover, matching the existing hover treatment on the between-panel resize dividers — previously it stayed a flat grey with no hover feedback at all.
+
+---
+
 ## [0.20.1] - 2026-07-14
 
 ### Fixed

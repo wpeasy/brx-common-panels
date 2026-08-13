@@ -230,7 +230,8 @@
         "." + DIVIDER_CLASS + ":hover{background:var(--builder-color-accent,#3b82f6);}",
         // Chrome bar on the iframe-facing edge: the WHOLE bar toggles collapse
         // (click) and resizes (drag); a centered light chevron indicates state.
-        "." + BAR_CLASS + "{flex:0 0 auto;display:flex;align-items:center;justify-content:center;height:10px;background:#3b3b3b;cursor:ns-resize;touch-action:none;user-select:none;}",
+        "." + BAR_CLASS + "{flex:0 0 auto;display:flex;align-items:center;justify-content:center;height:10px;background:#3b3b3b;cursor:ns-resize;touch-action:none;user-select:none;transition:background .1s ease;}",
+        "." + BAR_CLASS + ":hover{background:var(--builder-color-accent,#3b82f6);}",
         "." + DOCK_CLASS + '[data-collapsed="true"]>.' + BAR_CLASS + "{cursor:pointer;}",
         "." + CHEVRON_CLASS + "{pointer-events:none;color:#cfcfcf;font:600 8px/1 system-ui,sans-serif;opacity:.85;}",
         "." + BAR_CLASS + ":hover ." + CHEVRON_CLASS + "{opacity:1;}",
