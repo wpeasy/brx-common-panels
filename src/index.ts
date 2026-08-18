@@ -57,6 +57,12 @@ export interface RegisterOptions {
     resizable?: boolean;
     /** Initial collapsed state when nothing is persisted yet. Default false. */
     defaultCollapsed?: boolean;
+    /**
+     * Initial PER-PANEL collapse when nothing is persisted for this id yet —
+     * the panel shows only its header. Unrelated to `defaultCollapsed`, which
+     * collapses the whole dock. Default false.
+     */
+    defaultPanelCollapsed?: boolean;
     /** Called whenever the dock's collapsed state changes (incl. the restored state on register). */
     onCollapseChange?: (collapsed: boolean) => void;
 }
@@ -73,6 +79,17 @@ export interface PanelHandle {
     /** Whether the dock is currently collapsed. */
     isCollapsed(): boolean;
     /**
+     * Collapse or expand THIS panel alone, leaving the rest of the dock as it
+     * is. The panel shrinks along the axis its dock lays panels out on — width
+     * in a top/bottom row, height in a side dock's column — down to just its
+     * header, and its expanded size is remembered for when it reopens.
+     *
+     * Distinct from setCollapsed(), which collapses the whole DOCK.
+     */
+    setPanelCollapsed(collapsed: boolean): void;
+    /** Whether THIS panel (not its dock) is collapsed. */
+    isPanelCollapsed(): boolean;
+    /**
      * Hide the container (the iframe reclaims the space) WITHOUT unregistering —
      * the panel element stays in the DOM so the caller's references survive. Use
      * for temporary hide / detach; use unregister() for permanent removal.
@@ -88,6 +105,8 @@ export interface PanelInfo {
     position: DockPosition;
     height: number;
     collapsed: boolean;
+    /** True when THIS panel is collapsed to its header — independent of the dock's own collapse. */
+    panelCollapsed: boolean;
     /** True when the panel is hidden via setHidden (display:none) — independent of collapse. */
     hidden: boolean;
     /** Human label for the panel (the create() title, else header text, else id). */
@@ -194,6 +213,10 @@ export interface BrxCommonPanels {
     /** Hide/show a registered panel by id or element (display only — it stays
      *  registered; independent of collapse). No-op for an unknown panel. */
     setHidden(idOrEl: string | HTMLElement, hidden: boolean): void;
+    /** Collapse/expand one panel to its header, without touching its dock. */
+    setPanelCollapsed(idOrEl: string | HTMLElement, collapsed: boolean): void;
+    /** Whether one panel is collapsed to its header. */
+    isPanelCollapsed(idOrEl: string | HTMLElement): boolean;
     /** Whether a registered panel is currently hidden (false for an unknown panel). */
     isHidden(idOrEl: string | HTMLElement): boolean;
     /**
@@ -234,7 +257,7 @@ declare global {
     // if present. Plugins bundling this copy cooperate until Bricks ships it.
     if (window.BRX_Common && window.BRX_Common.panels) return;
 
-    const VERSION = '0.20.0';
+    const VERSION = '0.21.0';
     const PREVIEW_ID = 'bricks-preview';
     const WRAPPER_ID = 'bricks-builder-iframe-wrapper';
     const HOST_CLASS = 'brx-common-host';
@@ -247,7 +270,8 @@ declare global {
     const PANEL_CLASS = 'brx-common-panel';
     const PANEL_HEADER_CLASS = 'brx-common-panel__header';
     const PANEL_TITLE_CLASS = 'brx-common-panel__title';
-    const PANEL_GRIP_CLASS = 'brx-common-panel__grip';
+    const PANEL_TOGGLE_CLASS = 'brx-common-panel__toggle';
+    const PANEL_SELF_COLLAPSED_CLASS = 'brx-common-panel--collapsed';
     const PANEL_CLOSE_CLASS = 'brx-common-panel__close';
     const PANEL_BODY_CLASS = 'brx-common-panel__body';
     const PANEL_FOOTER_CLASS = 'brx-common-panel__footer';
@@ -256,6 +280,9 @@ declare global {
     const DRAGGING_CLASS = 'brx-common-panel--dragging';
     const DOCK_DRAG_CLASS = 'brx-common-dock--drag';
     const DRAG_ACTIVE_CLASS = 'brx-common-drag-active'; // on <html> during a panel drag
+    /** On <html> during a divider resize — kills the collapse transition so the
+     *  panel edge tracks the pointer instead of easing behind it. */
+    const RESIZE_ACTIVE_CLASS = 'brx-common-resize-active';
     const STYLE_ID = 'brx-common-panels-style';
     const LS_KEY = 'brx-common-panels';
     /** Set on the wrapper while Bricks is actively scale-to-fitting the canvas
@@ -266,6 +293,12 @@ declare global {
     const MAX_PER_ROW = 3;      // panels per row before wrapping to a new row (top/bottom only)
     const PANEL_MIN_WIDTH = 80; // px — horizontal-resize clamp
     const PANEL_MIN_HEIGHT = 60; // px — vertical-resize clamp (side docks)
+    /** Extent a self-collapsed panel keeps: just the header strip, so its
+     *  expand button stays reachable. Matches the header's own min-height
+     *  (24px) plus its 3px padding either side. */
+    const PANEL_COLLAPSED_EXTENT = 30;
+    /** Collapse/expand duration, shared by the CSS rule and the restore timeout. */
+    const PANEL_ANIM_MS = 180;
     const ALL_POSITIONS: DockPosition[] = ['top', 'bottom', 'left', 'right'];
 
     /** Side docks (left/right) are vertical strips: a single column of panels that
@@ -295,6 +328,14 @@ declare global {
         onCollapse?: (collapsed: boolean) => void;
         // Human label for list()/UI — the create() title (or register opts.title).
         title?: string;
+        // Per-PANEL collapse (distinct from the DOCK collapse above, which
+        // hides every panel in the dock at once). A collapsed panel shrinks
+        // along the axis its dock lays panels out on — width in a top/bottom
+        // row, height in a side dock's column — leaving only its header.
+        selfCollapsed?: boolean;
+        // The panel's own expand/collapse button, kept so its arrow can be
+        // re-pointed when the panel is dragged to a dock on a different axis.
+        toggleEl?: HTMLElement;
     }
 
     const registry = new Map<string, PanelEntry>();
@@ -539,11 +580,53 @@ declare global {
             '.' + PANEL_HEADER_CLASS + ' button,.' + PANEL_HEADER_CLASS + ' a,.' + PANEL_HEADER_CLASS + ' input,.' + PANEL_HEADER_CLASS + ' select,.' + PANEL_HEADER_CLASS + ' textarea{cursor:auto;}',
             '.' + PANEL_FOOTER_CLASS + '{border-top:1px solid var(--builder-border,#2f3136);}',
             '.' + PANEL_TITLE_CLASS + '{font-weight:600;white-space:nowrap;}',
-            // Drag grip (far left of the header) — the ONLY drag handle, so it
-            // never conflicts with the panel's own header controls.
-            '.' + PANEL_GRIP_CLASS + '{flex:0 0 auto;cursor:grab;color:inherit;opacity:.5;font:600 12px/1 system-ui,sans-serif;padding:0 2px;user-select:none;touch-action:none;}',
-            '.' + PANEL_GRIP_CLASS + ':hover{opacity:.9;}',
-            '.' + PANEL_GRIP_CLASS + ':active{cursor:grabbing;}',
+            // Per-panel expand/collapse button, far left of the header — the slot
+            // the old drag grip occupied. The grip is gone: the whole header has
+            // always been the drag handle, so it was decoration competing for the
+            // most reachable corner of the panel.
+            // A resting background so the arrow reads as a control rather than
+            // punctuation in the header, and Bricks' own accent on hover. The
+            // accent token is right HERE (unlike our plugin's own buttons, which
+            // follow the Settings theme): this is dock chrome for the builder, and
+            // the package ships standalone with no knowledge of any consumer's
+            // theme — so it matches Bricks, with a literal fallback for a document
+            // where the builder's variables are not defined.
+            // align-self:flex-start, not the header's own centring: a consumer whose
+            // header wraps to two rows (the CSS Panel's does below 1100px) would
+            // otherwise centre this button against the FULL two-row height, lining it
+            // up with neither row and pushing it outside a collapsed panel's visible
+            // strip. Same misalignment that afflicted the old drag grip.
+            '.' + PANEL_TOGGLE_CLASS + '{flex:0 0 auto;align-self:flex-start;display:flex;align-items:center;justify-content:center;width:16px;height:16px;padding:0;border:0;border-radius:3px;background:var(--builder-bg-3,rgba(255,255,255,.10));color:inherit;opacity:.85;font:600 15px/1 system-ui,sans-serif;cursor:pointer;user-select:none;transition:color .12s ease-out,background-color .12s ease-out,opacity .12s ease-out;}',
+            '.' + PANEL_TOGGLE_CLASS + ':hover{opacity:1;color:var(--builder-color-accent,#ffd43b);background:var(--builder-bg-3,rgba(255,255,255,.18));}',
+            '.' + PANEL_TOGGLE_CLASS + ':focus-visible{outline:1px solid var(--builder-color-accent,#ffd43b);outline-offset:1px;}',
+            // A bespoke panel with no header of its own still gets a toggle; it is
+            // pinned to the panel's top-left instead of sitting in a header row.
+            '.' + PANEL_TOGGLE_CLASS + '--floating{position:absolute;top:4px;left:4px;z-index:2;background:var(--builder-bg-2,#18191d);}',
+            // ── Per-panel collapse ────────────────────────────────────────────
+            // The panel keeps only its header strip. Body and footer go, and the
+            // root gets `position:relative` so a floating toggle has something to
+            // anchor to.
+            '[data-brx-panel]{position:relative;}',
+            '.' + PANEL_SELF_COLLAPSED_CLASS + '>.' + PANEL_BODY_CLASS + ',.' + PANEL_SELF_COLLAPSED_CLASS + '>.' + PANEL_FOOTER_CLASS + '{display:none !important;}',
+            // Collapsed in a top/bottom dock the panel is a NARROW VERTICAL strip,
+            // so everything in the header except the toggle would overflow it —
+            // the title, the close button, any bespoke controls. Side docks
+            // collapse to a full-width strip instead, where the header still fits,
+            // so their contents deliberately stay visible.
+            '.' + DOCK_CLASS + '[data-position="top"] .' + PANEL_SELF_COLLAPSED_CLASS + '>.' + PANEL_HEADER_CLASS + '>*:not(.' + PANEL_TOGGLE_CLASS + '),.' + DOCK_CLASS + '[data-position="bottom"] .' + PANEL_SELF_COLLAPSED_CLASS + '>.' + PANEL_HEADER_CLASS + '>*:not(.' + PANEL_TOGGLE_CLASS + '){display:none !important;}',
+            '.' + DOCK_CLASS + '[data-position="top"] .' + PANEL_SELF_COLLAPSED_CLASS + '>.' + PANEL_HEADER_CLASS + ',.' + DOCK_CLASS + '[data-position="bottom"] .' + PANEL_SELF_COLLAPSED_CLASS + '>.' + PANEL_HEADER_CLASS + '{padding-inline:2px;justify-content:center;}',
+            // A collapsed panel must be allowed BELOW the resize clamps, which are
+            // there to stop a drag shrinking a panel into uselessness — a
+            // deliberate collapse is not that.
+            '.' + PANEL_SELF_COLLAPSED_CLASS + '{min-width:0 !important;min-height:0 !important;}',
+            // Ease-out, per the collapse/expand animation. Suppressed while
+            // dragging or divider-resizing, where every frame sets flex directly
+            // and a transition would lag the pointer.
+            // flex-BASIS only: see animatePanelExtent() for why animating
+            // flex-grow silently produces an instant jump.
+            '[data-brx-panel]{transition:flex-basis ' + PANEL_ANIM_MS + 'ms ease-out;}',
+            '.' + DRAG_ACTIVE_CLASS + ' [data-brx-panel],.' + RESIZE_ACTIVE_CLASS + ' [data-brx-panel]{transition:none !important;}',
+            '@media (prefers-reduced-motion:reduce){[data-brx-panel]{transition:none;}}',
             // While dragging, the original panel is temporarily removed from flow
             // so BOTH docks reflow live (source redistributes/empties, target opens
             // a slot). A placeholder shows where it will land.
@@ -585,6 +668,10 @@ declare global {
         order?: number;  // index within the dock (for reorder + DnD)
         width?: number;  // flex-grow weight (divider position); absent = equal
         hidden?: boolean; // show/hide state (Panels manager); absent = visible (Show)
+        // Per-panel collapse. Deliberately separate from `width`: collapsing
+        // must never overwrite the remembered expanded weight, or expanding
+        // again would restore the collapsed size.
+        selfCollapsed?: boolean;
     }
     interface Persisted {
         panels: Record<string, PanelPersist>;
@@ -697,6 +784,51 @@ declare global {
      * adjacent panels, and the shared per-row height. Hidden panels are parked
      * (display:none) directly in rowsEl, outside any row.
      */
+    /** Is this panel element individually collapsed? */
+    function isSelfCollapsed(el: HTMLElement): boolean {
+        const id = el.dataset.brxId;
+        return !!(id && registry.get(id)?.selfCollapsed);
+    }
+
+    /**
+     * The flex declaration for one panel slot.
+     *
+     * Expanded, a panel is weighted (`<w> 1 0`) and shares the dock with its
+     * siblings. Collapsed, it becomes a fixed strip that neither grows nor
+     * shrinks, so the panels beside it absorb the freed space. The weight itself
+     * is untouched — that is what "remembers" the expanded size.
+     */
+    function panelFlex(slot: HTMLElement, equal: boolean): string {
+        if (isSelfCollapsed(slot)) return '0 0 ' + PANEL_COLLAPSED_EXTENT + 'px';
+        return (equal ? '1' : (slot.dataset.brxWidth || '1')) + ' 1 0';
+    }
+
+    /**
+     * The arrow a panel's toggle shows, which depends on BOTH the dock's axis and
+     * the panel's state:
+     *
+     *  - top/bottom docks lay panels out in a ROW, so a panel collapses
+     *    horizontally: ◂ to collapse (it shrinks leftward), ▸ to expand.
+     *  - left/right docks stack panels in a COLUMN, so a panel collapses
+     *    vertically: ▴ to collapse, ▾ to expand.
+     */
+    function panelToggleChar(position: DockPosition, collapsed: boolean): string {
+        if (SIDE(position)) return collapsed ? '▾' : '▴';
+        return collapsed ? '▸' : '◂';
+    }
+
+    /** Re-point a panel's toggle arrow + label for its current dock and state. */
+    function syncPanelToggle(entry: PanelEntry): void {
+        const btn = entry.toggleEl;
+        if (!btn) return;
+        const collapsed = !!entry.selfCollapsed;
+        btn.textContent = panelToggleChar(entry.position, collapsed);
+        const label = (collapsed ? 'Expand' : 'Collapse') + ' panel';
+        btn.setAttribute('aria-label', label);
+        btn.setAttribute('title', label);
+        btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    }
+
     function layoutDockSlots(dock: DockState, slots: HTMLElement[], equal = false): void {
         const hidden = rowPanels(dock).filter((p) => p.style.display === 'none');
         dock.rowsEl.textContent = ''; // detach rows/dividers (slot refs are held)
@@ -709,7 +841,7 @@ declare global {
             dock.rowsEl.style.width = hasPanels ? dock.height + 'px' : '0px';
             slots.forEach((slot, i) => {
                 if (slot.hasAttribute('data-brx-panel')) {
-                    slot.style.flex = (equal ? '1' : (slot.dataset.brxWidth || '1')) + ' 1 0';
+                    slot.style.flex = panelFlex(slot, equal);
                 }
                 if (i > 0) dock.rowsEl.appendChild(createDivider(true));
                 dock.rowsEl.appendChild(slot);
@@ -724,7 +856,7 @@ declare global {
             const group = slots.slice(i, i + MAX_PER_ROW);
             group.forEach((slot) => {
                 if (slot.hasAttribute('data-brx-panel')) {
-                    slot.style.flex = (equal ? '1' : (slot.dataset.brxWidth || '1')) + ' 1 0';
+                    slot.style.flex = panelFlex(slot, equal);
                 } // a placeholder keeps its CSS flex
                 rowEl.appendChild(slot);
             });
@@ -768,16 +900,24 @@ declare global {
         };
         const onUp = (e: PointerEvent): void => {
             divider.releasePointerCapture?.(e.pointerId);
+            document.documentElement.classList.remove(RESIZE_ACTIVE_CLASS);
             window.removeEventListener('pointermove', onMove);
             window.removeEventListener('pointerup', onUp);
             const container = divider.parentElement as HTMLElement | null;
             const dock = container ? dockForEl(container) : undefined;
-            if (container) panelsIn(container).forEach((p) => { p.dataset.brxWidth = String(sizeOf(p)); });
+            // A collapsed panel measures ~30px; recording that as its weight
+            // would make it expand back to a sliver. Its stored weight is left
+            // exactly as it was before the collapse.
+            if (container) panelsIn(container).forEach((p) => {
+                if (isSelfCollapsed(p)) return;
+                p.dataset.brxWidth = String(sizeOf(p));
+            });
             if (dock) saveDockLayout(dock);
             emitChange();
         };
         divider.addEventListener('pointerdown', (e: PointerEvent) => {
             if (e.button !== 0) return;
+            document.documentElement.classList.add(RESIZE_ACTIVE_CLASS);
             prev = divider.previousElementSibling as HTMLElement | null;
             next = divider.nextElementSibling as HTMLElement | null;
             const container = divider.parentElement as HTMLElement | null;
@@ -872,7 +1012,17 @@ declare global {
         toDock.rowsEl.appendChild(panel); // placement is decided by layoutDockSlots below
         panel.setAttribute('data-brx-panel', position);
         const id = panel.dataset.brxId;
-        if (id) { const entry = registry.get(id); if (entry) entry.position = position; }
+        if (id) {
+            const entry = registry.get(id);
+            if (entry) {
+                entry.position = position;
+                // The collapse arrow encodes the dock's AXIS, so a panel dragged
+                // between a top/bottom row and a side column has to re-point it —
+                // otherwise a side-docked panel keeps offering a sideways arrow for
+                // a collapse that now happens vertically.
+                syncPanelToggle(entry);
+            }
+        }
 
         // Width reset is for panel-count changes, NOT reorders: equalise only when a
         // dock GAINS or LOSES a panel. A same-dock reorder retains every panel's width.
@@ -926,6 +1076,160 @@ declare global {
     }
 
     /** True if the pointer landed on (or inside) an interactive control. */
+    /**
+     * Build a panel's expand/collapse button.
+     *
+     * It sits at the far left of the header — the slot the drag grip used to
+     * occupy. Removing that grip cost nothing: the WHOLE header has always been
+     * the drag handle (see wireHeaderDrag), and the grip carried no listener of
+     * its own, so it was decoration. A <button> is also matched by
+     * isInteractiveTarget, so pressing it can never start a drag.
+     */
+    function createPanelToggle(): HTMLElement {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = PANEL_TOGGLE_CLASS;
+        btn.setAttribute('data-brx-no-drag', '');
+        btn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const panel = btn.closest('[data-brx-panel]') as HTMLElement | null;
+            const id = panel?.dataset.brxId;
+            if (id) setPanelCollapsed(id, !registry.get(id)?.selfCollapsed);
+        });
+        return btn;
+    }
+
+    /**
+     * Give a panel its toggle, wherever that panel keeps its chrome.
+     *
+     * A templated panel (create()) has a known header, so the button goes at its
+     * far left. A bespoke registered element may have no header at all — there
+     * the button is pinned to the panel's top-left corner instead, so the
+     * contract "every docked panel can be collapsed" holds for both.
+     */
+    function attachPanelToggle(entry: PanelEntry): void {
+        if (entry.toggleEl) return;
+        const btn = createPanelToggle();
+        const header = entry.el.querySelector('.' + PANEL_HEADER_CLASS) as HTMLElement | null;
+        if (header) {
+            header.insertBefore(btn, header.firstChild);
+        } else {
+            btn.classList.add(PANEL_TOGGLE_CLASS + '--floating');
+            entry.el.appendChild(btn);
+        }
+        entry.toggleEl = btn;
+        syncPanelToggle(entry);
+    }
+
+    /**
+     * Animate a panel between its collapsed and expanded extent.
+     *
+     * TWO reasons the obvious implementations do not work, both found by
+     * measuring rather than by reading the CSS:
+     *
+     *  1. Do NOT repack the dock. repackRows() empties rowsEl and re-appends every
+     *     panel, so the element is detached and re-inserted with its new flex
+     *     ALREADY applied — the browser sees a fresh element rather than a changed
+     *     property and no transition runs at all. Collapsing changes neither row
+     *     membership nor order, so there is nothing to repack anyway.
+     *
+     *  2. Do NOT animate flex-grow. A flex item's rendered size comes from its
+     *     share of the FREE SPACE, so when it is the only growing item in its row
+     *     (every other panel hidden, or simply alone) ANY non-zero grow claims all
+     *     of it. Interpolating 680 -> 0 therefore holds full width for the whole
+     *     duration and snaps to the basis on the final frame — visually instant,
+     *     with a perfectly valid transition on the element.
+     *
+     * So the extent is animated as a PIXEL flex-basis with grow/shrink pinned to
+     * 0: measure where we are, apply the destination to measure where we are
+     * going, snap back, then transition between the two numbers. Expanding
+     * restores the weighted flex afterwards, so the panel goes back to sharing the
+     * dock responsively instead of being frozen at the pixel width it landed on.
+     */
+    function animatePanelExtent(entry: PanelEntry): void {
+        const el = entry.el;
+        const collapsed = !!entry.selfCollapsed;
+        const target = panelFlex(el, false);
+        // Side docks stack vertically, so their flex-basis governs HEIGHT.
+        const axis = (): number => {
+            const r = el.getBoundingClientRect();
+            return SIDE(entry.position) ? r.height : r.width;
+        };
+
+        const reduced = typeof window.matchMedia === 'function'
+            && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        if (reduced) { el.style.flex = target; return; }
+
+        const from = axis();
+        el.style.transition = 'none';
+        el.style.flex = target;
+        const to = collapsed ? PANEL_COLLAPSED_EXTENT : axis();
+        el.style.flex = '0 0 ' + from + 'px';
+        void el.offsetWidth; // force the start value to take effect
+        el.style.transition = '';
+        el.style.flex = '0 0 ' + to + 'px';
+
+        if (collapsed) return; // the collapsed state IS a fixed basis — nothing to restore
+
+        // Hand the panel back to the flex algorithm once it has arrived. Guarded by
+        // a timeout as well as transitionend: a transition that never starts (the
+        // extent was already correct) fires no event, and the panel would stay
+        // pinned at a pixel width that stops responding to dock resizes.
+        let done = false;
+        const restore = (): void => {
+            if (done) return;
+            done = true;
+            el.removeEventListener('transitionend', onEnd);
+            // Only restore if this panel is still expanded — a fast double-click
+            // may have collapsed it again while the animation was in flight.
+            if (!registry.get(el.dataset.brxId || '')?.selfCollapsed) {
+                /*
+                 * Hand back to the flex algorithm WITHOUT animating the handover.
+                 *
+                 * The weighted flex sets flex-basis to 0 and flex-grow to the
+                 * panel's weight. flex-basis is the property being transitioned,
+                 * so leaving the transition on made the basis ease 602px -> 0
+                 * while the grow jumped to its full weight immediately: for those
+                 * frames the panel measured basis PLUS its share of free space,
+                 * visibly overshooting its final width and then easing back down.
+                 * Reported exactly that way — "it overshoots and then returns".
+                 */
+                el.style.transition = 'none';
+                el.style.flex = panelFlex(el, false);
+                void el.offsetWidth;
+                el.style.transition = '';
+            }
+        };
+        const onEnd = (e: TransitionEvent): void => {
+            if (e.target === el && e.propertyName === 'flex-basis') restore();
+        };
+        el.addEventListener('transitionend', onEnd);
+        window.setTimeout(restore, PANEL_ANIM_MS + 60);
+    }
+
+    /** Collapse or expand ONE panel, persist it, and reflow its dock. */
+    function setPanelCollapsed(idOrEl: string | HTMLElement, collapsed: boolean): void {
+        const id = typeof idOrEl === 'string' ? idOrEl : idOrEl.dataset.brxId;
+        const entry = id ? registry.get(id) : undefined;
+        if (!entry || !id) return;
+        if (!!entry.selfCollapsed === !!collapsed) return;
+
+        entry.selfCollapsed = !!collapsed;
+        entry.el.classList.toggle(PANEL_SELF_COLLAPSED_CLASS, !!collapsed);
+        syncPanelToggle(entry);
+        persistPanel(id, { selfCollapsed: !!collapsed });
+
+        animatePanelExtent(entry);
+        emitChange();
+    }
+
+    /** Whether one panel is collapsed to its header. */
+    function isPanelCollapsed(idOrEl: string | HTMLElement): boolean {
+        const id = typeof idOrEl === 'string' ? idOrEl : idOrEl.dataset.brxId;
+        return !!(id && registry.get(id)?.selfCollapsed);
+    }
+
     function isInteractiveTarget(t: EventTarget | null): boolean {
         const el = t as HTMLElement | null;
         return !!el?.closest?.('button, a, input, select, textarea, label, [contenteditable], [data-brx-no-drag]');
@@ -1300,13 +1604,23 @@ declare global {
 
         repackRows(dock); // honours persisted order + chunks into rows of MAX_PER_ROW
 
-        registry.set(id, {
+        const entry: PanelEntry = {
             el,
             position: dock.position,
             allowed,
             onCollapse: o.onCollapseChange,
             title: (o as RegisterOptions & { title?: string }).title,
-        });
+            // Restore the panel's own collapse state before its toggle is built,
+            // so the arrow is pointing the right way on the very first paint.
+            selfCollapsed: persisted?.selfCollapsed ?? !!o.defaultPanelCollapsed,
+        };
+        registry.set(id, entry);
+        if (entry.selfCollapsed) el.classList.add(PANEL_SELF_COLLAPSED_CLASS);
+        attachPanelToggle(entry);
+        // Re-lay out AFTER the entry exists: panelFlex() reads the collapse state
+        // out of the registry, so the repackRows() above (which runs before
+        // registry.set) cannot know this panel is collapsed.
+        if (entry.selfCollapsed) repackRows(dock);
         // Persist WITHOUT renumbering. Registration is incremental, so re-indexing
         // order across only the panels registered SO FAR (what saveDockLayout does)
         // collapses the saved order down to register order — the bug where panels
@@ -1358,6 +1672,8 @@ declare global {
             },
             setCollapsed: (c: boolean) => setDockCollapsed(curDock(), c),
             isCollapsed: () => curDock().collapsed,
+            setPanelCollapsed: (c: boolean) => setPanelCollapsed(id, c),
+            isPanelCollapsed: () => !!registry.get(id)?.selfCollapsed,
             setHidden: (h: boolean) => setPanelHidden(curDock(), el, h),
             getHeight: () => curDock().el.offsetHeight,
         };
@@ -1424,6 +1740,7 @@ declare global {
                 position: entry.position,
                 height: entry.el.offsetHeight,
                 collapsed: !!dock?.collapsed,
+                panelCollapsed: !!entry.selfCollapsed,
                 hidden: entry.el.style.display === 'none',
                 title: panelTitle(entry, id),
             });
@@ -1489,13 +1806,10 @@ declare global {
         const header = document.createElement('div');
         header.className = PANEL_HEADER_CLASS;
 
-        // Drag grip (far-left) — the ONLY handle that starts a move, so it never
-        // fights the panel's own header controls.
-        const grip = document.createElement('div');
-        grip.className = PANEL_GRIP_CLASS;
-        grip.textContent = '⠿'; // ⠿ braille grip
-        grip.setAttribute('aria-label', 'Drag to move panel');
-        header.appendChild(grip);
+        // No drag grip: the whole header is the drag handle, so it was decoration
+        // occupying the most reachable corner of the panel. That slot now holds the
+        // per-panel expand/collapse button, inserted by attachPanelToggle() during
+        // register() so bespoke panels get one too.
 
         if (o.header != null) {
             setContent(header, o.header);
@@ -1583,7 +1897,7 @@ declare global {
         emitChange();
     }
 
-    const api: BrxCommonPanels = { register, create, unregister, setHidden, isHidden, setEnabledPositions, recalc, list, on, version: VERSION };
+    const api: BrxCommonPanels = { register, create, unregister, setHidden, isHidden, setPanelCollapsed, isPanelCollapsed, setEnabledPositions, recalc, list, on, version: VERSION };
     window.BRX_Common = window.BRX_Common || {};
     window.BRX_Common.panels = api;
 

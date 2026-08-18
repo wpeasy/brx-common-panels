@@ -8,6 +8,25 @@ This package lives in-tree at `packages/brx-common-panels/` inside the `ab-brick
 
 ---
 
+## [0.21.0] - 2026-08-18
+
+### Added
+- **Per-panel collapse.** Every docked panel now carries an expand/collapse button at the far left of its header, and collapses to just that header strip — independently of the dock it lives in. `setCollapsed()` has always collapsed the whole DOCK (every panel in it at once); this is the missing per-panel equivalent.
+  - The panel shrinks along the axis its dock lays panels out on: **width** in a top/bottom dock, where panels sit side by side in a row; **height** in a left/right dock, where they stack in a column. The arrow follows that axis — `◂`/`▸` in a top/bottom dock, `▴`/`▾` in a side dock — and is re-pointed automatically when a panel is dragged between docks of different axes.
+  - The expanded size is remembered. Collapsing swaps the panel's flex declaration from its weight (`<w> 1 0`) to a fixed strip (`0 0 30px`) and leaves the weight untouched, so expanding restores exactly the size it had. A divider resize no longer records a collapsed panel's measured ~30px as its weight, which would otherwise have made it reopen as a sliver.
+  - State persists per panel id (`selfCollapsed`), deliberately in its own field rather than folded into `width` for the same reason.
+  - Transitions `flex-grow`/`flex-basis` with `ease-out`, suppressed during a panel drag or a divider resize (where every frame sets flex directly and easing would lag the pointer) and under `prefers-reduced-motion`.
+- **API**: `panels.setPanelCollapsed(idOrEl, collapsed)` / `panels.isPanelCollapsed(idOrEl)`, the same pair on the panel handle, `defaultPanelCollapsed` on `register`/`create`, and `panelCollapsed` on `PanelInfo`.
+
+### Removed
+- **The `⠿` drag grip.** It carried no listener of its own — `wireHeaderDrag()` has always made the WHOLE header the drag handle, with an `isInteractiveTarget` guard so header controls still work — so it was decoration occupying the most reachable corner of every panel. That slot now holds the collapse button. Two comments in the source claimed the grip was "the ONLY drag handle"; they were wrong, and are gone with it.
+- Consumers who hid the grip with their own CSS override (the plugin's CSS Panel did) can drop that rule; the element no longer exists.
+
+### Fixed
+- `VERSION` in the source read `0.20.0` while `package.json` said `0.20.2`. Both now agree, so `panels.version` reports the published tag.
+
+---
+
 ## [0.20.2] - 2026-07-21
 
 ### Changed

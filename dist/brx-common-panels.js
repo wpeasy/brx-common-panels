@@ -23,7 +23,7 @@
   (function bootstrap() {
     if (typeof window === "undefined" || typeof document === "undefined") return;
     if (window.BRX_Common && window.BRX_Common.panels) return;
-    const VERSION = "0.20.0";
+    const VERSION = "0.21.0";
     const PREVIEW_ID = "bricks-preview";
     const WRAPPER_ID = "bricks-builder-iframe-wrapper";
     const HOST_CLASS = "brx-common-host";
@@ -36,7 +36,8 @@
     const PANEL_CLASS = "brx-common-panel";
     const PANEL_HEADER_CLASS = "brx-common-panel__header";
     const PANEL_TITLE_CLASS = "brx-common-panel__title";
-    const PANEL_GRIP_CLASS = "brx-common-panel__grip";
+    const PANEL_TOGGLE_CLASS = "brx-common-panel__toggle";
+    const PANEL_SELF_COLLAPSED_CLASS = "brx-common-panel--collapsed";
     const PANEL_CLOSE_CLASS = "brx-common-panel__close";
     const PANEL_BODY_CLASS = "brx-common-panel__body";
     const PANEL_FOOTER_CLASS = "brx-common-panel__footer";
@@ -45,6 +46,7 @@
     const DRAGGING_CLASS = "brx-common-panel--dragging";
     const DOCK_DRAG_CLASS = "brx-common-dock--drag";
     const DRAG_ACTIVE_CLASS = "brx-common-drag-active";
+    const RESIZE_ACTIVE_CLASS = "brx-common-resize-active";
     const STYLE_ID = "brx-common-panels-style";
     const LS_KEY = "brx-common-panels";
     const SCALED_ATTR = "data-brx-scaled";
@@ -53,6 +55,8 @@
     const MAX_PER_ROW = 3;
     const PANEL_MIN_WIDTH = 80;
     const PANEL_MIN_HEIGHT = 60;
+    const PANEL_COLLAPSED_EXTENT = 30;
+    const PANEL_ANIM_MS = 180;
     const ALL_POSITIONS = ["top", "bottom", "left", "right"];
     const SIDE = (p) => p === "left" || p === "right";
     const registry = /* @__PURE__ */ new Map();
@@ -248,11 +252,53 @@
         "." + PANEL_HEADER_CLASS + " button,." + PANEL_HEADER_CLASS + " a,." + PANEL_HEADER_CLASS + " input,." + PANEL_HEADER_CLASS + " select,." + PANEL_HEADER_CLASS + " textarea{cursor:auto;}",
         "." + PANEL_FOOTER_CLASS + "{border-top:1px solid var(--builder-border,#2f3136);}",
         "." + PANEL_TITLE_CLASS + "{font-weight:600;white-space:nowrap;}",
-        // Drag grip (far left of the header) — the ONLY drag handle, so it
-        // never conflicts with the panel's own header controls.
-        "." + PANEL_GRIP_CLASS + "{flex:0 0 auto;cursor:grab;color:inherit;opacity:.5;font:600 12px/1 system-ui,sans-serif;padding:0 2px;user-select:none;touch-action:none;}",
-        "." + PANEL_GRIP_CLASS + ":hover{opacity:.9;}",
-        "." + PANEL_GRIP_CLASS + ":active{cursor:grabbing;}",
+        // Per-panel expand/collapse button, far left of the header — the slot
+        // the old drag grip occupied. The grip is gone: the whole header has
+        // always been the drag handle, so it was decoration competing for the
+        // most reachable corner of the panel.
+        // A resting background so the arrow reads as a control rather than
+        // punctuation in the header, and Bricks' own accent on hover. The
+        // accent token is right HERE (unlike our plugin's own buttons, which
+        // follow the Settings theme): this is dock chrome for the builder, and
+        // the package ships standalone with no knowledge of any consumer's
+        // theme — so it matches Bricks, with a literal fallback for a document
+        // where the builder's variables are not defined.
+        // align-self:flex-start, not the header's own centring: a consumer whose
+        // header wraps to two rows (the CSS Panel's does below 1100px) would
+        // otherwise centre this button against the FULL two-row height, lining it
+        // up with neither row and pushing it outside a collapsed panel's visible
+        // strip. Same misalignment that afflicted the old drag grip.
+        "." + PANEL_TOGGLE_CLASS + "{flex:0 0 auto;align-self:flex-start;display:flex;align-items:center;justify-content:center;width:16px;height:16px;padding:0;border:0;border-radius:3px;background:var(--builder-bg-3,rgba(255,255,255,.10));color:inherit;opacity:.85;font:600 15px/1 system-ui,sans-serif;cursor:pointer;user-select:none;transition:color .12s ease-out,background-color .12s ease-out,opacity .12s ease-out;}",
+        "." + PANEL_TOGGLE_CLASS + ":hover{opacity:1;color:var(--builder-color-accent,#ffd43b);background:var(--builder-bg-3,rgba(255,255,255,.18));}",
+        "." + PANEL_TOGGLE_CLASS + ":focus-visible{outline:1px solid var(--builder-color-accent,#ffd43b);outline-offset:1px;}",
+        // A bespoke panel with no header of its own still gets a toggle; it is
+        // pinned to the panel's top-left instead of sitting in a header row.
+        "." + PANEL_TOGGLE_CLASS + "--floating{position:absolute;top:4px;left:4px;z-index:2;background:var(--builder-bg-2,#18191d);}",
+        // ── Per-panel collapse ────────────────────────────────────────────
+        // The panel keeps only its header strip. Body and footer go, and the
+        // root gets `position:relative` so a floating toggle has something to
+        // anchor to.
+        "[data-brx-panel]{position:relative;}",
+        "." + PANEL_SELF_COLLAPSED_CLASS + ">." + PANEL_BODY_CLASS + ",." + PANEL_SELF_COLLAPSED_CLASS + ">." + PANEL_FOOTER_CLASS + "{display:none !important;}",
+        // Collapsed in a top/bottom dock the panel is a NARROW VERTICAL strip,
+        // so everything in the header except the toggle would overflow it —
+        // the title, the close button, any bespoke controls. Side docks
+        // collapse to a full-width strip instead, where the header still fits,
+        // so their contents deliberately stay visible.
+        "." + DOCK_CLASS + '[data-position="top"] .' + PANEL_SELF_COLLAPSED_CLASS + ">." + PANEL_HEADER_CLASS + ">*:not(." + PANEL_TOGGLE_CLASS + "),." + DOCK_CLASS + '[data-position="bottom"] .' + PANEL_SELF_COLLAPSED_CLASS + ">." + PANEL_HEADER_CLASS + ">*:not(." + PANEL_TOGGLE_CLASS + "){display:none !important;}",
+        "." + DOCK_CLASS + '[data-position="top"] .' + PANEL_SELF_COLLAPSED_CLASS + ">." + PANEL_HEADER_CLASS + ",." + DOCK_CLASS + '[data-position="bottom"] .' + PANEL_SELF_COLLAPSED_CLASS + ">." + PANEL_HEADER_CLASS + "{padding-inline:2px;justify-content:center;}",
+        // A collapsed panel must be allowed BELOW the resize clamps, which are
+        // there to stop a drag shrinking a panel into uselessness — a
+        // deliberate collapse is not that.
+        "." + PANEL_SELF_COLLAPSED_CLASS + "{min-width:0 !important;min-height:0 !important;}",
+        // Ease-out, per the collapse/expand animation. Suppressed while
+        // dragging or divider-resizing, where every frame sets flex directly
+        // and a transition would lag the pointer.
+        // flex-BASIS only: see animatePanelExtent() for why animating
+        // flex-grow silently produces an instant jump.
+        "[data-brx-panel]{transition:flex-basis " + PANEL_ANIM_MS + "ms ease-out;}",
+        "." + DRAG_ACTIVE_CLASS + " [data-brx-panel],." + RESIZE_ACTIVE_CLASS + " [data-brx-panel]{transition:none !important;}",
+        "@media (prefers-reduced-motion:reduce){[data-brx-panel]{transition:none;}}",
         // While dragging, the original panel is temporarily removed from flow
         // so BOTH docks reflow live (source redistributes/empties, target opens
         // a slot). A placeholder shows where it will land.
@@ -362,6 +408,29 @@
         r.style.height = dock.height + "px";
       });
     }
+    function isSelfCollapsed(el) {
+      var _a;
+      const id = el.dataset.brxId;
+      return !!(id && ((_a = registry.get(id)) == null ? void 0 : _a.selfCollapsed));
+    }
+    function panelFlex(slot, equal) {
+      if (isSelfCollapsed(slot)) return "0 0 " + PANEL_COLLAPSED_EXTENT + "px";
+      return (equal ? "1" : slot.dataset.brxWidth || "1") + " 1 0";
+    }
+    function panelToggleChar(position, collapsed) {
+      if (SIDE(position)) return collapsed ? "\u25BE" : "\u25B4";
+      return collapsed ? "\u25B8" : "\u25C2";
+    }
+    function syncPanelToggle(entry) {
+      const btn = entry.toggleEl;
+      if (!btn) return;
+      const collapsed = !!entry.selfCollapsed;
+      btn.textContent = panelToggleChar(entry.position, collapsed);
+      const label = (collapsed ? "Expand" : "Collapse") + " panel";
+      btn.setAttribute("aria-label", label);
+      btn.setAttribute("title", label);
+      btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    }
     function layoutDockSlots(dock, slots, equal = false) {
       const hidden = rowPanels(dock).filter((p) => p.style.display === "none");
       dock.rowsEl.textContent = "";
@@ -370,7 +439,7 @@
         dock.rowsEl.style.width = hasPanels ? dock.height + "px" : "0px";
         slots.forEach((slot, i) => {
           if (slot.hasAttribute("data-brx-panel")) {
-            slot.style.flex = (equal ? "1" : slot.dataset.brxWidth || "1") + " 1 0";
+            slot.style.flex = panelFlex(slot, equal);
           }
           if (i > 0) dock.rowsEl.appendChild(createDivider(true));
           dock.rowsEl.appendChild(slot);
@@ -385,7 +454,7 @@
         const group = slots.slice(i, i + MAX_PER_ROW);
         group.forEach((slot) => {
           if (slot.hasAttribute("data-brx-panel")) {
-            slot.style.flex = (equal ? "1" : slot.dataset.brxWidth || "1") + " 1 0";
+            slot.style.flex = panelFlex(slot, equal);
           }
           rowEl.appendChild(slot);
         });
@@ -429,11 +498,13 @@
       const onUp = (e) => {
         var _a;
         (_a = divider.releasePointerCapture) == null ? void 0 : _a.call(divider, e.pointerId);
+        document.documentElement.classList.remove(RESIZE_ACTIVE_CLASS);
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
         const container = divider.parentElement;
         const dock = container ? dockForEl(container) : void 0;
         if (container) panelsIn(container).forEach((p) => {
+          if (isSelfCollapsed(p)) return;
           p.dataset.brxWidth = String(sizeOf(p));
         });
         if (dock) saveDockLayout(dock);
@@ -442,6 +513,7 @@
       divider.addEventListener("pointerdown", (e) => {
         var _a;
         if (e.button !== 0) return;
+        document.documentElement.classList.add(RESIZE_ACTIVE_CLASS);
         prev = divider.previousElementSibling;
         next = divider.nextElementSibling;
         const container = divider.parentElement;
@@ -531,7 +603,10 @@
       const id = panel.dataset.brxId;
       if (id) {
         const entry = registry.get(id);
-        if (entry) entry.position = position;
+        if (entry) {
+          entry.position = position;
+          syncPanelToggle(entry);
+        }
       }
       const sameDock = !!fromDock && fromDock === toDock;
       const flat = others.slice();
@@ -571,6 +646,92 @@
         layoutDockSlots(d, slots, isGaining || isLosing);
         d.el.style.display = "";
       });
+    }
+    function createPanelToggle() {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = PANEL_TOGGLE_CLASS;
+      btn.setAttribute("data-brx-no-drag", "");
+      btn.addEventListener("click", (e) => {
+        var _a;
+        e.preventDefault();
+        e.stopPropagation();
+        const panel = btn.closest("[data-brx-panel]");
+        const id = panel == null ? void 0 : panel.dataset.brxId;
+        if (id) setPanelCollapsed(id, !((_a = registry.get(id)) == null ? void 0 : _a.selfCollapsed));
+      });
+      return btn;
+    }
+    function attachPanelToggle(entry) {
+      if (entry.toggleEl) return;
+      const btn = createPanelToggle();
+      const header = entry.el.querySelector("." + PANEL_HEADER_CLASS);
+      if (header) {
+        header.insertBefore(btn, header.firstChild);
+      } else {
+        btn.classList.add(PANEL_TOGGLE_CLASS + "--floating");
+        entry.el.appendChild(btn);
+      }
+      entry.toggleEl = btn;
+      syncPanelToggle(entry);
+    }
+    function animatePanelExtent(entry) {
+      const el = entry.el;
+      const collapsed = !!entry.selfCollapsed;
+      const target = panelFlex(el, false);
+      const axis = () => {
+        const r = el.getBoundingClientRect();
+        return SIDE(entry.position) ? r.height : r.width;
+      };
+      const reduced = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      if (reduced) {
+        el.style.flex = target;
+        return;
+      }
+      const from = axis();
+      el.style.transition = "none";
+      el.style.flex = target;
+      const to = collapsed ? PANEL_COLLAPSED_EXTENT : axis();
+      el.style.flex = "0 0 " + from + "px";
+      void el.offsetWidth;
+      el.style.transition = "";
+      el.style.flex = "0 0 " + to + "px";
+      if (collapsed) return;
+      let done = false;
+      const restore = () => {
+        var _a;
+        if (done) return;
+        done = true;
+        el.removeEventListener("transitionend", onEnd);
+        if (!((_a = registry.get(el.dataset.brxId || "")) == null ? void 0 : _a.selfCollapsed)) {
+          el.style.transition = "none";
+          el.style.flex = panelFlex(el, false);
+          void el.offsetWidth;
+          el.style.transition = "";
+        }
+      };
+      const onEnd = (e) => {
+        if (e.target === el && e.propertyName === "flex-basis") restore();
+      };
+      el.addEventListener("transitionend", onEnd);
+      window.setTimeout(restore, PANEL_ANIM_MS + 60);
+    }
+    function setPanelCollapsed(idOrEl, collapsed) {
+      const id = typeof idOrEl === "string" ? idOrEl : idOrEl.dataset.brxId;
+      const entry = id ? registry.get(id) : void 0;
+      if (!entry || !id) return;
+      if (!!entry.selfCollapsed === !!collapsed) return;
+      entry.selfCollapsed = !!collapsed;
+      entry.el.classList.toggle(PANEL_SELF_COLLAPSED_CLASS, !!collapsed);
+      syncPanelToggle(entry);
+      persistPanel(id, { selfCollapsed: !!collapsed });
+      animatePanelExtent(entry);
+      emitChange();
+    }
+    function isPanelCollapsed(idOrEl) {
+      var _a;
+      const id = typeof idOrEl === "string" ? idOrEl : idOrEl.dataset.brxId;
+      return !!(id && ((_a = registry.get(id)) == null ? void 0 : _a.selfCollapsed));
     }
     function isInteractiveTarget(t) {
       var _a;
@@ -836,7 +997,7 @@
       });
     }
     function register(el, opts) {
-      var _a, _b;
+      var _a, _b, _c;
       if (!el) return null;
       const o = opts || {};
       ensureStylesheet();
@@ -859,16 +1020,23 @@
         });
       }
       repackRows(dock);
-      registry.set(id, {
+      const entry = {
         el,
         position: dock.position,
         allowed,
         onCollapse: o.onCollapseChange,
-        title: o.title
-      });
+        title: o.title,
+        // Restore the panel's own collapse state before its toggle is built,
+        // so the arrow is pointing the right way on the very first paint.
+        selfCollapsed: (_a = persisted == null ? void 0 : persisted.selfCollapsed) != null ? _a : !!o.defaultPanelCollapsed
+      };
+      registry.set(id, entry);
+      if (entry.selfCollapsed) el.classList.add(PANEL_SELF_COLLAPSED_CLASS);
+      attachPanelToggle(entry);
+      if (entry.selfCollapsed) repackRows(dock);
       if (o.id) {
         const layout = loadLayout().panels;
-        let order = (_a = layout[id]) == null ? void 0 : _a.order;
+        let order = (_b = layout[id]) == null ? void 0 : _b.order;
         if (order == null) {
           let maxOrder = -1;
           rowPanels(dock).forEach((p) => {
@@ -886,7 +1054,7 @@
       if (o.id && (persisted == null ? void 0 : persisted.hidden)) {
         setPanelHidden(dock, el, true);
       }
-      (_b = o.onCollapseChange) == null ? void 0 : _b.call(o, dock.collapsed);
+      (_c = o.onCollapseChange) == null ? void 0 : _c.call(o, dock.collapsed);
       emitAdd(id);
       emitChange();
       const curDock = () => docks.get(el.getAttribute("data-brx-panel")) || dock;
@@ -903,6 +1071,11 @@
         },
         setCollapsed: (c) => setDockCollapsed(curDock(), c),
         isCollapsed: () => curDock().collapsed,
+        setPanelCollapsed: (c) => setPanelCollapsed(id, c),
+        isPanelCollapsed: () => {
+          var _a2;
+          return !!((_a2 = registry.get(id)) == null ? void 0 : _a2.selfCollapsed);
+        },
         setHidden: (h) => setPanelHidden(curDock(), el, h),
         getHeight: () => curDock().el.offsetHeight
       };
@@ -961,6 +1134,7 @@
           position: entry.position,
           height: entry.el.offsetHeight,
           collapsed: !!(dock == null ? void 0 : dock.collapsed),
+          panelCollapsed: !!entry.selfCollapsed,
           hidden: entry.el.style.display === "none",
           title: panelTitle(entry, id)
         });
@@ -1014,11 +1188,6 @@
       el.className = PANEL_CLASS + (o.className ? " " + o.className : "");
       const header = document.createElement("div");
       header.className = PANEL_HEADER_CLASS;
-      const grip = document.createElement("div");
-      grip.className = PANEL_GRIP_CLASS;
-      grip.textContent = "\u283F";
-      grip.setAttribute("aria-label", "Drag to move panel");
-      header.appendChild(grip);
       if (o.header != null) {
         setContent(header, o.header);
       } else if (o.title) {
@@ -1089,7 +1258,7 @@
       });
       emitChange();
     }
-    const api = { register, create, unregister, setHidden, isHidden, setEnabledPositions, recalc, list, on, version: VERSION };
+    const api = { register, create, unregister, setHidden, isHidden, setPanelCollapsed, isPanelCollapsed, setEnabledPositions, recalc, list, on, version: VERSION };
     window.BRX_Common = window.BRX_Common || {};
     window.BRX_Common.panels = api;
     const runReady = (cb) => {
