@@ -8,6 +8,23 @@ This package lives in-tree at `packages/brx-common-panels/` inside the `ab-brick
 
 ---
 
+## [0.22.0] - 2026-08-19
+
+### Changed
+- **The panel title is no longer rendered in the header.** Panels are narrow and their headers already carry the controls that matter; a repeated name was the least useful thing competing for that space. It was inconsistent too — a panel supplying its own `header` never showed one, so one panel had a visible label while its neighbour did not.
+
+### Added
+- **The name now appears in the two places it earns its room**, identically for every panel:
+  - **Expanded** — as the collapse button's tooltip, so the arrow keeps conveying the action while the tooltip says which panel it belongs to. The ARIA label still states the verb, plus `aria-expanded`.
+  - **Collapsed** — as a tag along the collapsed strip, rotated to run down it in a top/bottom dock and flat in a side dock. It uses `writing-mode` rather than a `rotate()` transform, so the box sizes to the rotated text instead of overflowing its own.
+- Both read the SAME stored title, so a panel with a bespoke header behaves exactly like one that passes `title`.
+
+### Notes
+- The tag is a sibling of the header, not a child, so it can never disturb the layout of a panel that supplies its own — and as a direct child of the panel root it is free to fill the collapsed strip. It is absolutely positioned rather than laid out in the flex column: the strip is only 30px on its short axis, so competing with the header for flex space would leave it a few pixels.
+- `panelTitle()` still falls back to reading the header when a panel passes no `title`, so `list()` (and any host UI built on it) is unaffected.
+
+---
+
 ## [0.21.0] - 2026-08-18
 
 ### Added

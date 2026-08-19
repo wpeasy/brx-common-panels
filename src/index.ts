@@ -257,7 +257,7 @@ declare global {
     // if present. Plugins bundling this copy cooperate until Bricks ships it.
     if (window.BRX_Common && window.BRX_Common.panels) return;
 
-    const VERSION = '0.21.0';
+    const VERSION = '0.22.0';
     const PREVIEW_ID = 'bricks-preview';
     const WRAPPER_ID = 'bricks-builder-iframe-wrapper';
     const HOST_CLASS = 'brx-common-host';
@@ -270,6 +270,7 @@ declare global {
     const PANEL_CLASS = 'brx-common-panel';
     const PANEL_HEADER_CLASS = 'brx-common-panel__header';
     const PANEL_TITLE_CLASS = 'brx-common-panel__title';
+    const PANEL_TAG_CLASS = 'brx-common-panel__tag';
     const PANEL_TOGGLE_CLASS = 'brx-common-panel__toggle';
     const PANEL_SELF_COLLAPSED_CLASS = 'brx-common-panel--collapsed';
     const PANEL_CLOSE_CLASS = 'brx-common-panel__close';
@@ -336,6 +337,8 @@ declare global {
         // The panel's own expand/collapse button, kept so its arrow can be
         // re-pointed when the panel is dragged to a dock on a different axis.
         toggleEl?: HTMLElement;
+        // The rotated name shown only while collapsed — see attachPanelToggle.
+        tagEl?: HTMLElement;
     }
 
     const registry = new Map<string, PanelEntry>();
@@ -525,7 +528,12 @@ declare global {
             '.' + DOCK_CLASS + '[data-position="left"]{grid-column:1;grid-row:2;}',
             '.' + DOCK_CLASS + '[data-position="right"]{grid-column:3;grid-row:2;}',
             // Dock container — top/bottom stack bar+rows vertically (default).
-            '.' + DOCK_CLASS + '{position:relative;display:flex;flex-direction:column;min-height:0;min-width:0;box-sizing:border-box;}',
+            // The dock carries the same surface as the panels it holds. Without it,
+            // collapsing every panel leaves the freed space showing whatever is
+            // BEHIND the dock — the panels shrink to 30px strips but the dock keeps
+            // its extent, so the remainder of the row was a bare rectangle of the
+            // page underneath.
+            '.' + DOCK_CLASS + '{position:relative;display:flex;flex-direction:column;min-height:0;min-width:0;box-sizing:border-box;background:var(--builder-bg,#1e1e1e);}',
             '.' + DOCK_CLASS + '[data-collapsed="true"]{height:auto !important;}',
             '.' + DOCK_CLASS + ':empty{display:none;}',
             // ── Side docks (left/right): a vertical strip — flex ROW so the chrome bar
@@ -580,6 +588,20 @@ declare global {
             '.' + PANEL_HEADER_CLASS + ' button,.' + PANEL_HEADER_CLASS + ' a,.' + PANEL_HEADER_CLASS + ' input,.' + PANEL_HEADER_CLASS + ' select,.' + PANEL_HEADER_CLASS + ' textarea{cursor:auto;}',
             '.' + PANEL_FOOTER_CLASS + '{border-top:1px solid var(--builder-border,#2f3136);}',
             '.' + PANEL_TITLE_CLASS + '{font-weight:600;white-space:nowrap;}',
+            // Collapsed name tag. Hidden while the panel is open (the toggle's
+            // tooltip carries the name there) and revealed along the collapsed
+            // strip. Absolutely positioned rather than laid out in the flex
+            // column: the strip is only 30px on its short axis, so competing
+            // with the header for flex space leaves the tag a few pixels tall.
+            // Offset by 34px to clear the toggle button in either orientation.
+            '.' + PANEL_TAG_CLASS + '{display:none;}',
+            '.' + PANEL_SELF_COLLAPSED_CLASS + '>.' + PANEL_TAG_CLASS + '{display:flex;align-items:center;position:absolute;overflow:hidden;font:600 11px/1 system-ui,sans-serif;letter-spacing:.02em;color:var(--builder-color,#e6e9ee);opacity:.75;white-space:nowrap;pointer-events:none;user-select:none;}',
+            // Top/bottom dock: the strip is a narrow COLUMN, so the name runs
+            // down it. writing-mode rather than a rotate() transform, so the
+            // box sizes to the rotated text instead of overflowing its own.
+            '.' + PANEL_SELF_COLLAPSED_CLASS + '>.' + PANEL_TAG_CLASS + '[data-brx-axis="vertical"]{writing-mode:vertical-rl;text-orientation:mixed;top:34px;bottom:4px;left:0;right:0;justify-content:flex-start;}',
+            // Side dock: the strip is a short full-width ROW, so it reads flat.
+            '.' + PANEL_SELF_COLLAPSED_CLASS + '>.' + PANEL_TAG_CLASS + '[data-brx-axis="horizontal"]{left:34px;right:4px;top:0;bottom:0;line-height:' + PANEL_COLLAPSED_EXTENT + 'px;}',
             // Per-panel expand/collapse button, far left of the header — the slot
             // the old drag grip occupied. The grip is gone: the whole header has
             // always been the drag handle, so it was decoration competing for the
@@ -817,16 +839,102 @@ declare global {
         return collapsed ? '▸' : '◂';
     }
 
+    /**
+     * Does this page style `[data-balloon]`, i.e. will the tooltip actually
+     * render?
+     *
+     * Bricks Builder ships the CSS, so inside the builder it does. A
+     * standalone consumer of this package probably does not, and would get no
+     * tooltip at all if we relied on it alone — hence the native `title`
+     * fallback, but ONLY where the styled one is absent. Setting both shows
+     * two tooltips stacked on one hover, which is what prompted this.
+     *
+     * Memoised: the answer cannot change without a stylesheet load, and this
+     * runs on every toggle sync. Cross-origin sheets throw on `cssRules` and
+     * are skipped.
+     */
+    let balloonStyled: boolean | null = null;
+    function hasBalloonStyles(): boolean {
+        if (balloonStyled !== null) return balloonStyled;
+        balloonStyled = false;
+        const sheets = document.styleSheets;
+        for (let i = 0; i < sheets.length && !balloonStyled; i++) {
+            let rules: CSSRuleList;
+            try {
+                rules = sheets[i].cssRules;
+            } catch {
+                continue; // cross-origin
+            }
+            for (let j = 0; j < rules.length; j++) {
+                const sel = (rules[j] as CSSStyleRule).selectorText;
+                if (sel && sel.indexOf('data-balloon') !== -1) {
+                    balloonStyled = true;
+                    break;
+                }
+            }
+        }
+        return balloonStyled;
+    }
+
     /** Re-point a panel's toggle arrow + label for its current dock and state. */
-    function syncPanelToggle(entry: PanelEntry): void {
+    function syncPanelToggle(entry: PanelEntry, id?: string): void {
         const btn = entry.toggleEl;
         if (!btn) return;
         const collapsed = !!entry.selfCollapsed;
         btn.textContent = panelToggleChar(entry.position, collapsed);
-        const label = (collapsed ? 'Expand' : 'Collapse') + ' panel';
-        btn.setAttribute('aria-label', label);
-        btn.setAttribute('title', label);
+
+        /*
+         * The TOOLTIP names the panel; the ARIA label states the action.
+         *
+         * With the header's visible title gone, the tooltip is where a panel's
+         * name lives while it is open — so it says "Generated HTML", not
+         * "Collapse panel", which the arrow already conveys. Assistive tech
+         * still gets the verb, plus aria-expanded.
+         */
+        const name = entry.title || (id ? panelTitle(entry, id) : '');
+        const action = collapsed ? 'Expand' : 'Collapse';
+
+        /*
+         * BOTH tooltip mechanisms, deliberately.
+         *
+         * `title` is the native one — always available, never clipped by an
+         * ancestor's overflow, but on a ~1s delay that makes it easy to miss
+         * (reported as "no visible tooltip"). `data-balloon` is instant and
+         * styled, and Bricks Builder already ships the CSS for it; where that
+         * CSS is absent the attributes are simply inert, so a standalone
+         * consumer still gets the native one.
+         *
+         * `bottom-left` pins the tooltip's LEFT edge to the button and grows
+         * RIGHTWARD — into the panel, not off its left edge. That matters
+         * because a panel clips its own overflow, so a tooltip growing the
+         * other way would be cut off.
+         */
+        // Exactly ONE tooltip mechanism, never both.
+        const styled = hasBalloonStyles();
+        if (name && !collapsed && styled) {
+            btn.setAttribute('data-balloon', name);
+            btn.setAttribute('data-balloon-pos', 'bottom-left');
+            btn.removeAttribute('title');
+        } else {
+            btn.removeAttribute('data-balloon');
+            btn.removeAttribute('data-balloon-pos');
+            // Collapsed, the tag alongside already shows the name and the strip
+            // is too narrow for a tooltip anyway — so a title would only be
+            // noise. Keep it solely as the unstyled-host fallback.
+            if (!styled && name && !collapsed) {
+                btn.setAttribute('title', name);
+            } else {
+                btn.removeAttribute('title');
+            }
+        }
+        btn.setAttribute('aria-label', name ? action + ' ' + name : action + ' panel');
         btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+
+        // The collapsed tag shows the same name, rotated along the strip.
+        if (entry.tagEl) {
+            entry.tagEl.textContent = name;
+            entry.tagEl.dataset.brxAxis = SIDE(entry.position) ? 'horizontal' : 'vertical';
+        }
     }
 
     function layoutDockSlots(dock: DockState, slots: HTMLElement[], equal = false): void {
@@ -1119,6 +1227,21 @@ declare global {
             entry.el.appendChild(btn);
         }
         entry.toggleEl = btn;
+
+        /*
+         * The collapsed name tag — a sibling of the header, not a child.
+         *
+         * Kept out of the header so it can never disturb the layout of a
+         * panel that supplies its own (the CSS Panel's header is bespoke and
+         * tightly packed). As a direct child of the panel root it is free to
+         * fill the collapsed strip and rotate with it.
+         */
+        const tag = document.createElement('div');
+        tag.className = PANEL_TAG_CLASS;
+        tag.setAttribute('aria-hidden', 'true'); // the toggle already names the panel
+        entry.el.appendChild(tag);
+        entry.tagEl = tag;
+
         syncPanelToggle(entry);
     }
 
@@ -1811,13 +1934,23 @@ declare global {
         // per-panel expand/collapse button, inserted by attachPanelToggle() during
         // register() so bespoke panels get one too.
 
+        /*
+         * The title is NOT rendered in the header.
+         *
+         * Panels are narrow and their headers already carry the controls that
+         * matter; a repeated name is the least useful thing competing for that
+         * space, and it was inconsistent besides — a panel supplying its own
+         * `header` never showed one, so "Generated HTML" had a visible label
+         * while the CSS Panel did not.
+         *
+         * The name is still carried, in the two places it earns its room:
+         * the collapse button's tooltip, and a rotated tag shown only while
+         * the panel is collapsed (see attachPanelToggle). Both come from the
+         * SAME stored title, so every panel behaves identically whether or not
+         * it supplies a bespoke header.
+         */
         if (o.header != null) {
             setContent(header, o.header);
-        } else if (o.title) {
-            const title = document.createElement('span');
-            title.className = PANEL_TITLE_CLASS;
-            title.textContent = o.title;
-            header.appendChild(title);
         }
 
         // Optional close (✕) button — top-right of the header.

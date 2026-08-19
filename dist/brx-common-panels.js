@@ -23,7 +23,7 @@
   (function bootstrap() {
     if (typeof window === "undefined" || typeof document === "undefined") return;
     if (window.BRX_Common && window.BRX_Common.panels) return;
-    const VERSION = "0.21.0";
+    const VERSION = "0.22.0";
     const PREVIEW_ID = "bricks-preview";
     const WRAPPER_ID = "bricks-builder-iframe-wrapper";
     const HOST_CLASS = "brx-common-host";
@@ -36,6 +36,7 @@
     const PANEL_CLASS = "brx-common-panel";
     const PANEL_HEADER_CLASS = "brx-common-panel__header";
     const PANEL_TITLE_CLASS = "brx-common-panel__title";
+    const PANEL_TAG_CLASS = "brx-common-panel__tag";
     const PANEL_TOGGLE_CLASS = "brx-common-panel__toggle";
     const PANEL_SELF_COLLAPSED_CLASS = "brx-common-panel--collapsed";
     const PANEL_CLOSE_CLASS = "brx-common-panel__close";
@@ -197,7 +198,12 @@
         "." + DOCK_CLASS + '[data-position="left"]{grid-column:1;grid-row:2;}',
         "." + DOCK_CLASS + '[data-position="right"]{grid-column:3;grid-row:2;}',
         // Dock container — top/bottom stack bar+rows vertically (default).
-        "." + DOCK_CLASS + "{position:relative;display:flex;flex-direction:column;min-height:0;min-width:0;box-sizing:border-box;}",
+        // The dock carries the same surface as the panels it holds. Without it,
+        // collapsing every panel leaves the freed space showing whatever is
+        // BEHIND the dock — the panels shrink to 30px strips but the dock keeps
+        // its extent, so the remainder of the row was a bare rectangle of the
+        // page underneath.
+        "." + DOCK_CLASS + "{position:relative;display:flex;flex-direction:column;min-height:0;min-width:0;box-sizing:border-box;background:var(--builder-bg,#1e1e1e);}",
         "." + DOCK_CLASS + '[data-collapsed="true"]{height:auto !important;}',
         "." + DOCK_CLASS + ":empty{display:none;}",
         // ── Side docks (left/right): a vertical strip — flex ROW so the chrome bar
@@ -252,6 +258,20 @@
         "." + PANEL_HEADER_CLASS + " button,." + PANEL_HEADER_CLASS + " a,." + PANEL_HEADER_CLASS + " input,." + PANEL_HEADER_CLASS + " select,." + PANEL_HEADER_CLASS + " textarea{cursor:auto;}",
         "." + PANEL_FOOTER_CLASS + "{border-top:1px solid var(--builder-border,#2f3136);}",
         "." + PANEL_TITLE_CLASS + "{font-weight:600;white-space:nowrap;}",
+        // Collapsed name tag. Hidden while the panel is open (the toggle's
+        // tooltip carries the name there) and revealed along the collapsed
+        // strip. Absolutely positioned rather than laid out in the flex
+        // column: the strip is only 30px on its short axis, so competing
+        // with the header for flex space leaves the tag a few pixels tall.
+        // Offset by 34px to clear the toggle button in either orientation.
+        "." + PANEL_TAG_CLASS + "{display:none;}",
+        "." + PANEL_SELF_COLLAPSED_CLASS + ">." + PANEL_TAG_CLASS + "{display:flex;align-items:center;position:absolute;overflow:hidden;font:600 11px/1 system-ui,sans-serif;letter-spacing:.02em;color:var(--builder-color,#e6e9ee);opacity:.75;white-space:nowrap;pointer-events:none;user-select:none;}",
+        // Top/bottom dock: the strip is a narrow COLUMN, so the name runs
+        // down it. writing-mode rather than a rotate() transform, so the
+        // box sizes to the rotated text instead of overflowing its own.
+        "." + PANEL_SELF_COLLAPSED_CLASS + ">." + PANEL_TAG_CLASS + '[data-brx-axis="vertical"]{writing-mode:vertical-rl;text-orientation:mixed;top:34px;bottom:4px;left:0;right:0;justify-content:flex-start;}',
+        // Side dock: the strip is a short full-width ROW, so it reads flat.
+        "." + PANEL_SELF_COLLAPSED_CLASS + ">." + PANEL_TAG_CLASS + '[data-brx-axis="horizontal"]{left:34px;right:4px;top:0;bottom:0;line-height:' + PANEL_COLLAPSED_EXTENT + "px;}",
         // Per-panel expand/collapse button, far left of the header — the slot
         // the old drag grip occupied. The grip is gone: the whole header has
         // always been the drag handle, so it was decoration competing for the
@@ -421,15 +441,55 @@
       if (SIDE(position)) return collapsed ? "\u25BE" : "\u25B4";
       return collapsed ? "\u25B8" : "\u25C2";
     }
-    function syncPanelToggle(entry) {
+    let balloonStyled = null;
+    function hasBalloonStyles() {
+      if (balloonStyled !== null) return balloonStyled;
+      balloonStyled = false;
+      const sheets = document.styleSheets;
+      for (let i = 0; i < sheets.length && !balloonStyled; i++) {
+        let rules;
+        try {
+          rules = sheets[i].cssRules;
+        } catch (e) {
+          continue;
+        }
+        for (let j = 0; j < rules.length; j++) {
+          const sel = rules[j].selectorText;
+          if (sel && sel.indexOf("data-balloon") !== -1) {
+            balloonStyled = true;
+            break;
+          }
+        }
+      }
+      return balloonStyled;
+    }
+    function syncPanelToggle(entry, id) {
       const btn = entry.toggleEl;
       if (!btn) return;
       const collapsed = !!entry.selfCollapsed;
       btn.textContent = panelToggleChar(entry.position, collapsed);
-      const label = (collapsed ? "Expand" : "Collapse") + " panel";
-      btn.setAttribute("aria-label", label);
-      btn.setAttribute("title", label);
+      const name = entry.title || (id ? panelTitle(entry, id) : "");
+      const action = collapsed ? "Expand" : "Collapse";
+      const styled = hasBalloonStyles();
+      if (name && !collapsed && styled) {
+        btn.setAttribute("data-balloon", name);
+        btn.setAttribute("data-balloon-pos", "bottom-left");
+        btn.removeAttribute("title");
+      } else {
+        btn.removeAttribute("data-balloon");
+        btn.removeAttribute("data-balloon-pos");
+        if (!styled && name && !collapsed) {
+          btn.setAttribute("title", name);
+        } else {
+          btn.removeAttribute("title");
+        }
+      }
+      btn.setAttribute("aria-label", name ? action + " " + name : action + " panel");
       btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      if (entry.tagEl) {
+        entry.tagEl.textContent = name;
+        entry.tagEl.dataset.brxAxis = SIDE(entry.position) ? "horizontal" : "vertical";
+      }
     }
     function layoutDockSlots(dock, slots, equal = false) {
       const hidden = rowPanels(dock).filter((p) => p.style.display === "none");
@@ -673,6 +733,11 @@
         entry.el.appendChild(btn);
       }
       entry.toggleEl = btn;
+      const tag = document.createElement("div");
+      tag.className = PANEL_TAG_CLASS;
+      tag.setAttribute("aria-hidden", "true");
+      entry.el.appendChild(tag);
+      entry.tagEl = tag;
       syncPanelToggle(entry);
     }
     function animatePanelExtent(entry) {
@@ -1190,11 +1255,6 @@
       header.className = PANEL_HEADER_CLASS;
       if (o.header != null) {
         setContent(header, o.header);
-      } else if (o.title) {
-        const title = document.createElement("span");
-        title.className = PANEL_TITLE_CLASS;
-        title.textContent = o.title;
-        header.appendChild(title);
       }
       let closeBtn = null;
       const showClose = (_a = o.closable) != null ? _a : typeof o.onClose === "function";
